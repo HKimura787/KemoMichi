@@ -262,7 +262,8 @@ KemoMichi のフィルタ（計画書 §6 の方針 3）と SearchTerms は相�
 | `Detections` | `detectionID`（主キー、連番。欠番あり）、`category`、`conf`、`bbox`、`classification`、`classification_conf`、`Id`（= DataTable の Id。削除時に連動して消える） |
 | `DetectionsVideo` | `frame_number`、`frame_rate`、`detectionID`（= Detections。削除時に連動）。主キーなし |
 
-- 型名に SQLite の正式な型でない `STRING` が使われている（数値に近い扱いになる。**未検証**）。
+- 型名に SQLite の正式な型でない `STRING` が使われているため、列は数値寄りの扱い（NUMERIC 親和性）になり、
+  `"1"` のような番号は**整数として保存される**（KemoMichi で同じ定義のテーブルを作って確認）。読むときは文字列に直して扱う。
 - 索引: `IndexDetectionID`(Detections.Id)、`IndexDetectionVideoID`(DetectionsVideo.detectionID)、
   `IndexDetectionsClassificationConfidence`(classification, conf, classification_conf, Id)。
 - 認識結果のテーブルが空なら、開くときに削除される。
@@ -461,7 +462,7 @@ Timelapse と結果が違う点は文書に明記する。
 | `DataTable` の列順 | 01 minimal、10 template-update |
 | MultiChoice の項目の並び順 | 02 all-control-types |
 | SearchTerms / QuickPasteTerms の実際の JSON | 11 saved-state |
-| `STRING` 型の列に入った値の実際の型 | 07 recognitions |
+| `STRING` 型の列に入った値の実際の型（同じ定義で整数になることは確認済み。Timelapse 実機での確認） | 07 recognitions |
 | 古い日時形式（末尾 `Z`）の扱い | 14 old-version |
 | テンプレート同期で `.ddb` がどう変わるか | 10 template-update |
 | CSV のバイト列（BOM、CRLF、空白） | 12 csv-export |
