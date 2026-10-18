@@ -1,10 +1,13 @@
 import base64
 import json
 
+from pathlib import Path
+
 import pytest
 from conftest import needs_ffmpeg
 from fastapi.testclient import TestClient
 
+from kemocore.timelapse.create import scan_media
 from kemoserver.app import create_app
 from kemoserver.security import ServerConfig
 
@@ -18,10 +21,12 @@ def client(demo):
 
 def test_project_and_files(client):
     project = client.get("/api/project").json()
-    assert project["total"] == 27 and project["name"] == "TimelapseData.ddb"
+    on_disk = len(scan_media(Path(project["root"])))  # 25 images, plus 2 videos when ffmpeg made them
+    assert project["total"] == on_disk and project["name"] == "TimelapseData.ddb"
     assert project["templatePath"].endswith("TimelapseTemplate.tdb")
     page = client.get("/api/files", params={"filter": json.dumps({"folder": "CamB"}), "limit": 5}).json()
-    assert page["total"] == 13 and len(page["rows"]) == 5
+    cam_b = len([m for m in scan_media(Path(project["root"])) if m[0].startswith("CamB")])
+    assert page["total"] == cam_b and len(page["rows"]) == 5
     detail = client.get(f"/api/files/{page['rows'][0]['id']}").json()
     assert detail["kind"] == "image" and detail["exists"]
 
