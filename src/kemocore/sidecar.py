@@ -12,6 +12,8 @@ import threading
 from datetime import datetime
 from pathlib import Path
 
+from .timelapse.schema import sqlite_uri
+
 SCHEMA_VERSION = 1
 
 _SCHEMA = """
@@ -43,7 +45,7 @@ class Sidecar:
         self.read_only = read_only
         if read_only:
             # Never create or change files next to a project opened read-only.
-            source = f"file:{self.path}?mode=ro" if self.path.exists() else "file::memory:"
+            source = sqlite_uri(self.path) if self.path.exists() else "file::memory:"
             self.conn = sqlite3.connect(source, uri=True, check_same_thread=False)
             self.conn.row_factory = sqlite3.Row
             if not self.path.exists():

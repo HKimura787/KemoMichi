@@ -538,14 +538,15 @@ AI による補助（P7、将来対応）:
 
 ```
 KemoMichi/
-  core/                     # kemocore: .tdb/.ddb、検索、出力（純 Python）
-  server/                   # FastAPI アプリ、認証、ジョブ、画像配信
-  web/                      # React SPA
-  desktop/                  # Electron 殻
-  cli/                      # kemo CLI
-  docker/                   # Dockerfile, compose 例（Caddy 付き）
-  docs/                     # 設計計画（本書）、P0 で作るファイル形式仕様書
-  tests/fixtures/           # Timelapse2 実機で作成したゴールデンファイル
+  src/kemocore/             # コア: .tdb/.ddb 読み書き、CSV、認識結果、サイドカー、S・E 計測、動画（純 Python）
+  src/kemoserver/           # FastAPI アプリ、認証、画像・動画配信、kemo コマンド。static/ にビルド済み UI
+  web/                      # React SPA（ビルドすると src/kemoserver/static に出力）
+  tests/                    # コアとサーバのテスト
+  tools/                    # 構造確認ツール、配色の確認ツール
+  docs/                     # 設計計画（本書）、デザインシステム、ファイル形式仕様、MVP の使い方
+  tests/fixtures/           # Timelapse2 実機で作成したゴールデンファイル（作成待ち）
+  （今後）desktop/          # Electron 殻（P3）
+  （今後）docker/           # Dockerfile, compose 例（P5）
 ```
 
 AddaxAI 本体に組み込む案も検討したが採らない。AddaxAI のデータモデル

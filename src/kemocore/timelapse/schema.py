@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from pathlib import Path
+
 from . import constants as C
 from .template import Control
 
@@ -82,3 +84,8 @@ INSERT_TEMPLATE_ROW = (
     "DataLabel, Tooltip, Visible, List, ExportToCSV, TXTBOXWIDTH, Copyable) "
     "VALUES (?,?,?,?,?,?,?,?,?,?,?,?)"
 )
+
+
+def sqlite_uri(path, mode: str = "ro") -> str:
+    """A SQLite URI that survives Windows drive letters and '#', '?' or '%' in folder names."""
+    return f"{Path(path).resolve().as_uri()}?mode={mode}"

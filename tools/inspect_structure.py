@@ -56,7 +56,7 @@ def quote(name: str) -> str:
 
 
 def main(path: Path) -> None:
-    conn = sqlite3.connect(f"file:{path}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"{path.resolve().as_uri()}?mode=ro", uri=True)
     columns_anon = Anonymiser("user_col")
     tables_anon = Anonymiser("user_table")
 

@@ -17,8 +17,7 @@ from .timelapse.constants import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 THUMB_SIZE = 320
 PREVIEW_SIZE = 1920
-# Codecs and containers every current browser plays without help.
-_PLAYABLE_CODECS = {"h264", "vp8", "vp9", "av1"}
+# Containers that hold H.264 which Chrome, Edge, Safari and the desktop app play directly.
 _PLAYABLE_CONTAINERS = {".mp4", ".mov", ".webm", ".m4v"}
 
 _locks: dict[str, threading.Lock] = {}
@@ -183,26 +182,36 @@ def format_seconds(value: Fraction) -> str:
     return sign + text
 
 
-def playable_video(path: Path) -> Path | None:
-    """The file itself if browsers can play it, else a cached H.264 proxy with the same frames."""
+def playable_video(path: Path, container: str = "mp4") -> Path | None:
+    """The file itself if browsers can play it, else a cached proxy with the same frames.
+
+    `container` is "mp4" (H.264, for Chrome, Edge, Safari and the desktop app) or "webm" (VP9,
+    for browsers built without H.264).
+    """
     info = video_info(path)
-    if path.suffix.lower() in _PLAYABLE_CONTAINERS and info.get("codec") in _PLAYABLE_CODECS:
+    if container == "mp4" and path.suffix.lower() in _PLAYABLE_CONTAINERS and info.get("codec") == "h264":
+        return path
+    if container == "webm" and path.suffix.lower() == ".webm":
         return path
     if not has_ffmpeg():
         return None
-    target = cache_dir() / f"{_key(path, 'proxy1')}.mp4"
+    target = cache_dir() / f"{_key(path, 'proxy2-' + container)}.{container}"
     if target.exists():
         return target
     with _lock_for(str(target)):
         if target.exists():
             return target
-        tmp = target.with_suffix(".tmp.mp4")
+        tmp = target.with_suffix(f".tmp.{container}")
+        if container == "webm":
+            codec = ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-crf", "32", "-b:v", "0",
+                     "-row-mt", "1", "-c:a", "libopus"]
+        else:
+            codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac",
+                     "-movflags", "+faststart"]
         # passthrough keeps every frame and its timestamp: no frames dropped or duplicated.
         result = subprocess.run(
             ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-map", "0:v:0", "-map", "0:a?",
-             "-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p",
-             "-fps_mode", "passthrough", "-c:a", "aac", "-movflags", "+faststart", str(tmp)],
-            capture_output=True)
+             "-fps_mode", "passthrough", *codec, str(tmp)], capture_output=True)
         if result.returncode != 0:
             tmp.unlink(missing_ok=True)
             return None

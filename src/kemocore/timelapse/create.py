@@ -81,7 +81,7 @@ def create_data_file(ddb_path: Path, template_path: Path, progress=None) -> int:
     if ddb_path.exists():
         raise FileExistsError(ddb_path)
     root = ddb_path.parent
-    tconn = sqlite3.connect(f"file:{template_path}?mode=ro", uri=True)
+    tconn = sqlite3.connect(S.sqlite_uri(template_path), uri=True)
     tconn.row_factory = sqlite3.Row
     try:
         template_rows = [dict(r) for r in tconn.execute(

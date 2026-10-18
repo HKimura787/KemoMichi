@@ -262,12 +262,13 @@ def create_app(config: ServerConfig) -> FastAPI:
         return FileResponse(path, headers=cache_headers)
 
     @app.get("/api/media/{file_id}/video")
-    def video(file_id: int):
+    def video(file_id: int, format: str = "mp4"):
         path = media_file(file_id)
-        playable = media.playable_video(path)
+        container = "webm" if format == "webm" else "mp4"
+        playable = media.playable_video(path, container)
         if playable is None:
             raise HTTPException(415, detail={"error": "error.videoUnplayable"})
-        return FileResponse(playable, media_type="video/mp4", headers=cache_headers)
+        return FileResponse(playable, media_type=f"video/{container}", headers=cache_headers)
 
     @app.get("/api/media/{file_id}/video-info")
     def video_info(file_id: int):

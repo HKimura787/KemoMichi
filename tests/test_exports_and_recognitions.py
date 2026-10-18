@@ -123,3 +123,14 @@ def test_read_only_sidecar_creates_nothing(demo):
     sidecar = Sidecar(demo, read_only=True)
     assert sidecar.get("x") is None
     assert not sidecar.path.exists()
+
+
+@needs_ffmpeg
+def test_playback_proxies_keep_every_frame(demo):
+    project = TimelapseProject(demo)
+    avi = project.media_path(project.file(project.ids({"text": "VID_0002"})[0]))
+    source = media.video_info(avi)["frameTicks"]
+    for container in ("mp4", "webm"):
+        proxy = media.playable_video(avi, container)
+        assert proxy is not None and proxy != avi
+        assert len(media.video_info(proxy)["frameTicks"]) == len(source)

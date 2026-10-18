@@ -85,7 +85,7 @@ class TimelapseProject:
         self.root = self.path.parent
         self.lock = threading.RLock()
         mode = "ro" if read_only else "rw"
-        self.conn = sqlite3.connect(f"file:{self.path}?mode={mode}", uri=True, check_same_thread=False)
+        self.conn = sqlite3.connect(S.sqlite_uri(self.path, mode), uri=True, check_same_thread=False)
         self.conn.row_factory = sqlite3.Row
         self.conn.execute("PRAGMA foreign_keys = ON")
         self.read_only = read_only
@@ -472,7 +472,7 @@ class TimelapseProject:
         matches = []
         for candidate in self.root.glob("*.tdb"):
             try:
-                conn = sqlite3.connect(f"file:{candidate}?mode=ro", uri=True)
+                conn = sqlite3.connect(S.sqlite_uri(candidate), uri=True)
                 labels = {r[0] for r in conn.execute(f"SELECT DataLabel FROM {C.TEMPLATE_TABLE}")}
                 conn.close()
             except sqlite3.DatabaseError:

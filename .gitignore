@@ -11,3 +11,4 @@ node_modules/
 web/dist/
 *.egg-info/
 .pytest_cache/
+*.tsbuildinfo
