@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<title>KemoMichi palette preview</title>
+<style>
+  :root {
+    --primary: #0B4F8F; --primary-strong: #073766; --surface: #E8F0F8; --accent: #F08A00;
+    --text: #111111; --text-sub: #4A4A4A; --rule: #C8C8C8; --white: #FFFFFF;
+    --focus: #FFD43D; --error: #D10000; --viewer: #2B2B2B;
+    --bg: #FFFFFF; --panel: #FFFFFF; --on-primary: #FFFFFF;
+  }
+  .dark {
+    --primary: #7DB4EC; --surface: #1B2A3B; --text: #EDEDED; --text-sub: #B5B5B5;
+    --bg: #16191D; --panel: #1F242A; --rule: #3A424C; --on-primary: #111111; --error: #FF6B6B;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; font-family: "Noto Sans JP", "Hiragino Sans", "Yu Gothic UI", sans-serif;
+         font-size: 14px; background: #F4F4F4; color: #111; }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  p.note { margin: 0 0 16px; color: #4A4A4A; }
+  .row { display: flex; gap: 24px; flex-wrap: wrap; }
+  .app { width: 760px; background: var(--bg); color: var(--text); border: 1px solid #C8C8C8; }
+  .bar { background: var(--primary); color: var(--on-primary); height: 44px; display: flex; align-items: center;
+         padding: 0 12px; gap: 16px; font-weight: 700; }
+  .bar .sp { flex: 1; }
+  .bar .unsaved { display: flex; align-items: center; gap: 6px; font-weight: 400; }
+  .bar .unsaved i { width: 8px; height: 8px; background: var(--accent); display: inline-block; }
+  .panes { display: grid; grid-template-columns: 170px 1fr 220px; height: 390px; }
+  .pane { background: var(--panel); border-right: 1px solid var(--rule); overflow: hidden; }
+  .pane:last-child { border-right: 0; border-left: 1px solid var(--rule); }
+  .ph { background: var(--surface); color: var(--primary); font-weight: 700; padding: 8px 12px; }
+  .pb { padding: 8px 12px; display: flex; flex-direction: column; gap: 8px; }
+  .chip { display: inline-block; padding: 2px 8px; border-radius: 4px; background: var(--surface);
+          color: var(--primary); font-size: 12px; font-weight: 700; margin: 0 4px 4px 0; }
+  .chip.on { background: var(--primary); color: var(--on-primary); }
+  .tree div { padding: 2px 0; }
+  .tree .sel { background: var(--primary); color: var(--on-primary); padding: 2px 6px; }
+  .viewer { background: var(--viewer); position: relative; display: flex; flex-direction: column; }
+  .img { flex: 1; margin: 12px; background: linear-gradient(#8a9a7a, #5f6b52); position: relative; }
+  .img.ir { background: linear-gradient(#9a9a9a, #4a4a4a); }
+  .tri { position: absolute; inset: 0; width: 100%; height: 100%; }
+  .bbox { position: absolute; border: 2px solid #E69F00; outline: 1px solid #000; }
+  .bbox span { position: absolute; top: -18px; left: -2px; background: #000; color: #fff; font-size: 12px;
+               font-weight: 700; padding: 0 4px; }
+  .timeline { height: 40px; margin: 0 12px 12px; background: #3a3a3a; position: relative; }
+  .seg { position: absolute; top: 8px; height: 24px; background: rgba(125,180,236,.35); border-radius: 4px;
+         color: #fff; font-size: 12px; padding: 4px; font-weight: 700; }
+  .head { position: absolute; top: 0; bottom: 0; width: 2px; background: var(--accent); }
+  .tc { color: #fff; font-family: ui-monospace, Consolas, monospace; font-size: 12px; margin: 0 12px 6px; }
+  .palette { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .sp-btn { min-height: 44px; border: 1px solid var(--primary); color: var(--primary); background: var(--panel);
+            border-radius: 4px; padding: 4px 6px 4px 16px; font-weight: 700; position: relative; font-size: 14px; text-align: left; }
+  .sp-btn small { display: block; font-weight: 400; font-size: 12px; }
+  .sp-btn.on { background: var(--primary); color: var(--on-primary); border-color: var(--primary); }
+  .sp-btn.on::before { content: ""; position: absolute; top: 4px; left: 4px; width: 6px; height: 6px;
+                       background: var(--on-primary); }
+  .field label { display: block; font-size: 12px; color: var(--text-sub); }
+  .field input { width: 100%; height: 32px; border: 1px solid var(--primary); border-radius: 4px; padding: 0 8px;
+                 background: var(--panel); color: var(--text); font: inherit; }
+  .field.err input { border: 2px solid var(--error); }
+  .field.err .msg { color: var(--error); font-size: 12px; }
+  .field.focus input { outline: 2px solid #111; outline-offset: 0; box-shadow: 0 0 0 4px var(--focus); }
+  .btns { display: flex; gap: 8px; }
+  .btn { height: 32px; padding: 0 12px; border-radius: 4px; font-weight: 700; font: inherit; font-weight: 700; }
+  .btn.main { background: var(--accent); color: #111; border: 1px solid var(--accent); }
+  .btn.sub { background: var(--panel); color: var(--primary); border: 1px solid var(--primary); }
+  .sw { display: flex; gap: 8px; flex-wrap: wrap; margin-top: 16px; }
+  .sw div { font-size: 12px; } .sw b { display: block; width: 88px; height: 32px; border: 1px solid #C8C8C8; }
+</style>
+</head>
+<body>
+<h1>KemoMichi パレット見本（ライト / ダーク）</h1>
+<p class="note">主色 青・面 淡い青・アクセント 明るい橙。画像の周りは色を持たない暗い灰色。注釈（BBox など）は専用の配色＋黒の縁取り＋札。</p>
+<div class="row">
+  <div class="app" id="light"></div>
+  <div class="app dark" id="dark"></div>
+</div>
+<div class="sw">
+  <div><b style="background:#0B4F8F"></b>主色 #0B4F8F</div>
+  <div><b style="background:#073766"></b>主色・濃 #073766</div>
+  <div><b style="background:#E8F0F8"></b>面 #E8F0F8</div>
+  <div><b style="background:#F08A00"></b>アクセント #F08A00</div>
+  <div><b style="background:#2B2B2B"></b>ビューア #2B2B2B</div>
+  <div><b style="background:#FFD43D"></b>フォーカス #FFD43D</div>
+  <div><b style="background:#D10000"></b>エラー #D10000</div>
+  <div><b style="background:#FF6B6B"></b>エラー（ダーク） #FF6B6B</div>
+  <div><b style="background:#E69F00"></b><b style="background:#56B4E9;margin-top:-1px"></b>注釈色（一部）</div>
+</div>
+<template id="tpl">
+  <div class="bar"><span>KemoMichi</span><span style="font-weight:400">サイトA_2026春.ddb</span><span class="sp"></span>
+    <span class="unsaved"><i></i>未保存</span><span style="font-weight:400">この PC</span><span>日本語 / EN</span></div>
+  <div class="panes">
+    <div class="pane"><div class="ph">フォルダ</div><div class="pb tree">
+      <div>CamA</div><div class="sel">CamA/2026-04</div><div>CamB</div>
+      <div class="ph" style="margin:8px -12px 0">フィルタ</div>
+      <div><span class="chip on">種: タヌキ</span><span class="chip">未入力のみ</span><span class="chip">夜間</span></div>
+    </div></div>
+    <div class="viewer">
+      <div class="img IRCLASS">
+        <svg class="tri" viewBox="0 0 100 100" preserveAspectRatio="none">
+          <polygon points="20,85 50,30 80,85" fill="rgba(255,255,255,.15)" stroke="#000" stroke-width="1.2"/>
+          <polygon points="20,85 50,30 80,85" fill="none" stroke="#fff" stroke-width=".6"/>
+        </svg>
+        <div class="bbox" style="left:38%;top:45%;width:22%;height:30%"><span>タヌキ #1</span></div>
+      </div>
+      <div class="tc">00:00:04.170 / フレーム 125</div>
+      <div class="timeline"><div class="seg" style="left:20%;width:35%">区間1 S–E</div><div class="head" style="left:42%"></div></div>
+    </div>
+    <div class="pane"><div class="ph">データ入力</div><div class="pb">
+      <div class="palette">
+        <div class="sp-btn on">タヌキ<small>キー 1・個数 2</small></div>
+        <div class="sp-btn">キツネ<small>キー 2</small></div>
+        <div class="sp-btn on">アナグマ<small>キー 3・個数 1</small></div>
+        <div class="sp-btn">その他<small>キー 0</small></div>
+      </div>
+      <div class="field focus"><label>メモ</label><input value="フォーカス中"></div>
+      <div class="field err"><label>個数</label><input value="abc"><div class="msg">整数を入力してください</div></div>
+      <div class="btns"><button class="btn main">計測を確定</button><button class="btn sub">戻す</button></div>
+    </div></div>
+  </div>
+</template>
+<script>
+  for (const id of ["light", "dark"]) {
+    document.getElementById(id).innerHTML =
+      document.getElementById("tpl").innerHTML.replace("IRCLASS", id === "dark" ? "ir" : "");
+  }
+</script>
+</body>
+</html>

@@ -9,6 +9,8 @@ Timelapse2 互換の、クロスプラットフォーム対応カメラトラッ
 
 設計計画: [docs/design-plan.md](docs/design-plan.md)
 
+デザインシステム: [docs/design-system.md](docs/design-system.md)
+
 ※ Timelapse は Saul Greenberg / University of Calgary のソフトウェアです。本プロジェクトは
 Timelapse のコードを使用しない独立した実装で、本家とは関係ありません。
 ライセンス: MIT（[LICENSE](LICENSE)）

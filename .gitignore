@@ -4,3 +4,5 @@
 *.ddb
 !tests/fixtures/**/*.tdb
 !tests/fixtures/**/*.ddb
+
+__pycache__/
