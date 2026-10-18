@@ -18,37 +18,34 @@ from __future__ import annotations
 
 import math
 
+# Values from the Digital Agency design tokens (@digital-go-jp/design-tokens
+# 2.0.1, MIT) except the accent, which is KemoMichi's own.
 PALETTE = {
-    "primary": "#0B4F8F",
-    "primary_strong": "#073766",
-    "surface": "#E8F0F8",
+    "primary": "#0066BE",         # light-blue-800 (plan A)
+    "primary_strong": "#00428C",  # light-blue-1000
+    "primary_b": "#0031D8",       # blue-800 (plan B)
+    "surface": "#E8F1FE",         # blue-50
     "accent": "#F08A00",
-    "text": "#111111",
-    "text_sub": "#4A4A4A",
-    "rule": "#C8C8C8",
+    "text": "#1A1A1A",            # solid-gray-900
+    "text_sub": "#4D4D4D",        # solid-gray-700
+    "border": "#767676",          # solid-gray-536
+    "divider": "#CCCCCC",         # solid-gray-200
     "white": "#FFFFFF",
-    "focus": "#FFD43D",
-    "error": "#D10000",
-    "viewer": "#2B2B2B",
-    "dark_bg": "#16191D",
-    "dark_panel": "#1F242A",
-    "dark_text": "#EDEDED",
-    "dark_primary": "#7DB4EC",
-    "dark_surface": "#1B2A3B",
-    "dark_error": "#FF6B6B",
+    "focus": "#FFD43D",           # yellow-300
+    "error": "#CE0000",           # error-2
+    "warning": "#927200",         # warning-yellow-2
+    "success": "#197A4B",         # success-2
+    "viewer": "#333333",          # solid-gray-800
 }
 
 PAIRS = [
-    ("white", "primary"), ("primary", "white"), ("primary", "surface"),
-    ("white", "primary_strong"), ("text", "surface"), ("text_sub", "white"),
-    ("text_sub", "surface"), ("text", "accent"), ("accent", "primary"),
-    ("accent", "white"), ("accent", "surface"), ("surface", "white"),
-    ("accent", "focus"), ("accent", "error"), ("error", "white"),
-    ("primary", "text_sub"), ("accent", "viewer"), ("white", "viewer"),
-    ("dark_text", "dark_bg"), ("dark_text", "dark_panel"),
-    ("dark_primary", "dark_bg"), ("dark_primary", "dark_panel"),
-    ("text", "dark_primary"), ("accent", "dark_panel"), ("dark_text", "dark_surface"),
-    ("dark_error", "dark_panel"), ("dark_error", "dark_bg"),
+    ("white", "primary"), ("primary", "surface"), ("primary_strong", "white"),
+    ("text", "white"), ("text", "surface"), ("text_sub", "white"), ("text_sub", "surface"),
+    ("border", "white"), ("text", "accent"), ("accent", "primary"), ("accent", "white"),
+    ("surface", "white"), ("accent", "focus"), ("accent", "error"), ("accent", "warning"),
+    ("error", "white"), ("warning", "white"), ("warning", "surface"), ("success", "white"),
+    ("accent", "viewer"), ("white", "viewer"), ("white", "primary_b"), ("accent", "primary_b"),
+    ("primary_b", "surface"),
 ]
 
 MACHADO = {
