@@ -1,0 +1,99 @@
+import base64
+import json
+
+import pytest
+from conftest import needs_ffmpeg
+from fastapi.testclient import TestClient
+
+from kemoserver.app import create_app
+from kemoserver.security import ServerConfig
+
+
+@pytest.fixture
+def client(demo):
+    app = create_app(ServerConfig(open_path=demo))
+    with TestClient(app) as c:
+        yield c
+
+
+def test_project_and_files(client):
+    project = client.get("/api/project").json()
+    assert project["total"] == 27 and project["name"] == "TimelapseData.ddb"
+    assert project["templatePath"].endswith("TimelapseTemplate.tdb")
+    page = client.get("/api/files", params={"filter": json.dumps({"folder": "CamB"}), "limit": 5}).json()
+    assert page["total"] == 13 and len(page["rows"]) == 5
+    detail = client.get(f"/api/files/{page['rows'][0]['id']}").json()
+    assert detail["kind"] == "image" and detail["exists"]
+
+
+def test_edit_undo_and_validation(client):
+    r = client.patch("/api/files", json={"ids": [1, 2], "values": {"SpeciesA": True, "SpeciesACount": "2"}})
+    assert r.status_code == 200 and r.json()["changed"] == 4
+    bad = client.patch("/api/files", json={"ids": [1], "values": {"SpeciesACount": "x"}})
+    assert bad.status_code == 422 and bad.json()["error"] == "error.integer"
+    undone = client.post("/api/undo").json()
+    assert undone["fileIds"] == [1, 2]
+    assert client.get("/api/files/1").json()["values"]["SpeciesA"] == "false"
+
+
+def test_media(client):
+    thumb = client.get("/api/media/1/thumb")
+    assert thumb.status_code == 200 and thumb.headers["content-type"] == "image/jpeg"
+    assert client.get("/api/media/1/preview").status_code == 200
+
+
+@needs_ffmpeg
+def test_video_range_and_info(client):
+    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0002"})}).json()[0]
+    info = client.get(f"/api/media/{vid}/video-info").json()
+    assert info["available"] and len(info["frameTimes"]) == 45 and info["frameTimes"][1] == pytest.approx(1 / 15)
+    part = client.get(f"/api/media/{vid}/video", headers={"Range": "bytes=0-99"})
+    assert part.status_code == 206 and len(part.content) == 100
+
+
+@needs_ffmpeg
+def test_intervals_lock_their_columns(client):
+    client.put("/api/settings/restColumns", json={"value": {
+        "start": "StayStart", "end": "StayEnd", "duration": "StayDuration", "multi": "first"}})
+    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0001"})}).json()[0]
+    made = client.post("/api/intervals", json={"kind": "video", "fileId": vid, "startFrame": 0, "endFrame": 30}).json()
+    assert made["values"]["StayDuration"] == "1.001"
+    locked = client.patch("/api/files", json={"ids": [vid], "values": {"StayDuration": "5"}})
+    assert locked.status_code == 400 and locked.json()["detail"]["error"] == "error.lockedField"
+    gone = client.delete(f"/api/intervals/{made['interval']['id']}").json()
+    assert gone["values"]["StayDuration"] == ""
+
+
+def test_species_counters_and_palette(client):
+    suggestion = client.get("/api/palette/suggest").json()
+    assert suggestion["items"][0] == {"flag": "SpeciesA", "counter": "SpeciesACount", "key": "1"}
+    result = client.post("/api/template/species-counters", json={"flags": ["Unclear"], "labelSuffix": " count"}).json()
+    assert result["templateUpdated"] is True
+    assert any(c["dataLabel"] == "UnclearCount" for c in result["controls"])
+
+
+def test_folders_and_guides(client):
+    client.put("/api/folder-settings", json={"folder": "CamA", "key": "guides",
+                                             "value": [{"shape": "triangle", "points": [[0.2, 0.9], [0.5, 0.3], [0.8, 0.9]]}]})
+    got = client.get("/api/folder-settings", params={"folder": "CamA\\2026-04"}).json()
+    assert got["guides"][0]["shape"] == "triangle" and got["color"] is None
+
+
+def test_server_mode_requires_password_and_roots(tmp_path):
+    with pytest.raises(SystemExit):
+        ServerConfig(host="0.0.0.0").check()
+    with pytest.raises(SystemExit):
+        ServerConfig(host="0.0.0.0", password="x").check()
+    ServerConfig(host="0.0.0.0", password="x", roots=[tmp_path]).check()
+
+
+def test_password_and_root_restriction(demo, tmp_path):
+    app = create_app(ServerConfig(host="0.0.0.0", password="secret", roots=[demo.parent]))
+    with TestClient(app) as c:  # the test client is not a loopback peer
+        assert c.get("/api/info").status_code == 401
+        auth = {"Authorization": "Basic " + base64.b64encode(b"user:secret").decode()}
+        assert c.get("/api/info", headers=auth).status_code == 200
+        outside = c.get("/api/browse", params={"path": str(tmp_path)}, headers=auth)
+        assert outside.status_code == 403
+        inside = c.get("/api/browse", params={"path": str(demo.parent)}, headers=auth).json()
+        assert any(f["kind"] == "ddb" for f in inside["files"])
