@@ -5,24 +5,43 @@ P2b のうち REST 計測の中核（補助線、S・E による滞在時間）�
 
 ## 1. 起動する
 
-必要なもの: Python 3.11 以上。動画を扱う場合は ffmpeg（`ffmpeg` と `ffprobe` にパスが通っていること）。
-Windows / macOS / Linux で同じ手順です。
+必要なもの: [uv](https://docs.astral.sh/uv/)（推奨）または Python 3.11 以上。動画を扱う場合は ffmpeg
+（`ffmpeg` と `ffprobe` にパスが通っていること）。Windows / macOS / Linux で同じ手順です。
+
+### uv を使う（推奨）
+
+uv は Python 本体も自動で用意するので、Python を別に入れる必要はありません。
 
 ```bash
-# 取得してインストール（初回だけ）
 git clone https://github.com/HKimura787/KemoMichi.git
 cd KemoMichi
+uv sync                                   # 初回だけ。.venv を作って依存関係を入れる
+
+# まずはデモで試す（ダミーの画像・動画と見本テンプレートを作る。実データは使わない）
+uv run kemo demo ~/kemomichi-demo
+uv run kemo serve ~/kemomichi-demo/TimelapseData.ddb
+```
+
+どのフォルダからでも `kemo` で起動したい場合は、コマンドとして入れます。
+
+```bash
+uv tool install .                         # KemoMichi のフォルダで実行
+kemo serve                                # 以後どこからでも
+uv tool upgrade kemomichi                 # 更新したとき（git pull の後）
+```
+
+### pip を使う
+
+```bash
 python -m venv .venv
 # Windows: .venv\Scripts\activate   macOS/Linux: source .venv/bin/activate
 pip install -e .
-
-# まずはデモで試す（ダミーの画像・動画と見本テンプレートを作る。実データは使わない）
 kemo demo ~/kemomichi-demo
 kemo serve ~/kemomichi-demo/TimelapseData.ddb
 ```
 
 ブラウザが自動で開きます（開かなければ <http://127.0.0.1:8765/>）。
-自分のデータで試すときは `kemo serve` だけで起動し、画面から `.ddb` を選びます。
+自分のデータで試すときは `kemo serve`（uv なら `uv run kemo serve`）だけで起動し、画面から `.ddb` を選びます。
 
 **初めて自分のデータで使うときは、必ずプロジェクトのフォルダごとコピーを取ってから**試してください。
 KemoMichi も書き込み前に `Backups/` にバックアップを作りますが、MVP のためです。
@@ -105,8 +124,8 @@ kemo serve --host 0.0.0.0 --password 共有パスワード --root /data/camera
 ## 8. 開発
 
 ```bash
-pip install -e ".[dev]"
-pytest                     # コアとサーバのテスト
+uv sync                    # 開発用の依存関係（pytest など）も入る。pip なら pip install -e ".[dev]"
+uv run pytest              # コアとサーバのテスト
 cd web && npm install
 npm run dev                # 開発用（別ターミナルで kemo serve --no-browser を起動）
 npm run build              # src/kemoserver/static に出力（リポジトリに含めています）

@@ -10,10 +10,12 @@ Timelapse2 互換の、クロスプラットフォーム対応カメラトラッ
 ## すぐ試す
 
 ```bash
-pip install -e .
-kemo demo ~/kemomichi-demo
-kemo serve ~/kemomichi-demo/TimelapseData.ddb
+uv sync
+uv run kemo demo ~/kemomichi-demo
+uv run kemo serve ~/kemomichi-demo/TimelapseData.ddb
 ```
+
+pip でも使えます（`pip install -e .` の後、`kemo ...`）。
 
 詳しくは [docs/mvp.md](docs/mvp.md)。
 
