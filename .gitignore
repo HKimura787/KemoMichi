@@ -1,0 +1,6 @@
+
+# 利用者から提供された実データ（仕様策定専用。コミット禁止）
+*.tdb
+*.ddb
+!tests/fixtures/**/*.tdb
+!tests/fixtures/**/*.ddb

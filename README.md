@@ -11,3 +11,4 @@ Timelapse2 互換の、クロスプラットフォーム対応カメラトラッ
 
 ※ Timelapse は Saul Greenberg / University of Calgary のソフトウェアです。本プロジェクトは
 Timelapse のコードを使用しない独立した実装で、本家とは関係ありません。
+ライセンス: MIT（[LICENSE](LICENSE)）
