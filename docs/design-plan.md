@@ -63,7 +63,7 @@ UI 改善の方針、サーバ動作、段階的なマイルストーン、リ�
 | C6 その他出力 | CamtrapDP 出力、バックアップ（`Backups/`）、削除ファイル退避（`DeletedFiles/`）の同じ流儀 | P4 |
 | C7 設定の保持 | `ImageSetTable` の `SortTerms` / `SearchTerms` / `QuickPasteTerms`（JSON）を読み書き | P4 |
 
-ソースで確認したファイル構造（P0 で詳細仕様化する）:
+ソースで確認したファイル構造（詳細は [docs/spec/timelapse-format.md](spec/timelapse-format.md)）:
 
 - `.tdb`（テンプレート）: `TemplateTable`, `TemplateInfo`, フォルダ階層データ用の
   `FolderDataTemplateTable`, `FolderDataInfo`。
