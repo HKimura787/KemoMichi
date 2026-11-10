@@ -141,3 +141,43 @@ def test_choices_serialize_like_timelapse():
     assert Choices(False, ["日", "夜"]).serialize() == '{"IncludeEmptyChoice":false,"ChoiceListNonEmpty":["日","夜"]}'
     assert Choices(True, []).serialize() == ""
     assert Choices.parse("not json").include_empty is True
+
+
+def test_duplicate_record(demo):
+    project = TimelapseProject(demo)
+    initial_count = project.count({})
+    info_before = project.file_records_info(1)
+    assert info_before == {"index": 1, "total": 1}
+
+    # Mark original for deletion to ensure duplicate resets delete flag
+    project.update([1], {"DeleteFlag": "true", "Note": "Original entry"})
+    assert project.file(1)["values"]["DeleteFlag"] == "true"
+
+    new_id = project.duplicate(1)
+    assert new_id > 0
+    assert project.count({}) == initial_count + 1
+
+    orig = project.file(1)
+    dup = project.file(new_id)
+    assert dup["values"]["File"] == orig["values"]["File"]
+    assert dup["values"]["RelativePath"] == orig["values"]["RelativePath"]
+    assert dup["values"]["DateTime"] == orig["values"]["DateTime"]
+    assert dup["values"]["Note"] == "Original entry"
+    assert dup["values"]["DeleteFlag"] == "false"  # reset
+
+    # Verify duplicate record index and total
+    info_orig = project.file_records_info(1)
+    info_dup = project.file_records_info(new_id)
+    assert info_orig == {"index": 1, "total": 2}
+    assert info_dup == {"index": 2, "total": 2}
+
+    # Verify order: duplicate appears immediately after original
+    ids = project.ids({})
+    assert ids.index(new_id) == ids.index(1) + 1
+
+    # Read-only project raises
+    ro_project = TimelapseProject(demo, read_only=True)
+    with pytest.raises(ProjectError):
+        ro_project.duplicate(1)
+    ro_project.close()
+    project.close()

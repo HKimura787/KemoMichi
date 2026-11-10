@@ -69,6 +69,8 @@ export const api = {
   saveCapture: (fileId: number, filename: string, image: string) =>
     request<{ path: string; filename: string; relative: string }>("POST", "/api/capture", { fileId, filename, image }),
   videoInfo: (id: number) => request<VideoInfo>("GET", `/api/media/${id}/video-info`),
+  duplicateFile: (fileId: number) =>
+    request<{ id: number; row: Row; total: number }>("POST", `/api/files/${fileId}/duplicate`),
   createInterval: (data: Record<string, unknown>) => request<any>("POST", "/api/intervals", data),
   updateInterval: (id: number, data: Record<string, unknown>) => request<any>("PUT", `/api/intervals/${id}`, data),
   deleteInterval: (id: number) => request<any>("DELETE", `/api/intervals/${id}`),

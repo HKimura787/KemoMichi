@@ -159,3 +159,28 @@ def test_capture_and_file_rest(client):
     assert "path" in data
     assert Path(data["path"]).exists()
     assert Path(data["path"]).read_bytes() != b""
+
+
+def test_duplicate_file_api(client):
+    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0001"})}).json()[0]
+    detail_before = client.get(f"/api/files/{vid}").json()
+    assert detail_before["recordIndex"] == 1
+    assert detail_before["recordTotal"] == 1
+
+    res = client.post(f"/api/files/{vid}/duplicate")
+    assert res.status_code == 200
+    data = res.json()
+    new_id = data["id"]
+    assert new_id != vid
+
+    detail_after = client.get(f"/api/files/{vid}").json()
+    assert detail_after["recordIndex"] == 1
+    assert detail_after["recordTotal"] == 2
+
+    dup_detail = client.get(f"/api/files/{new_id}").json()
+    assert dup_detail["recordIndex"] == 2
+    assert dup_detail["recordTotal"] == 2
+    assert dup_detail["values"]["File"] == detail_before["values"]["File"]
+
+    # 404 for non-existent file
+    assert client.post("/api/files/999999/duplicate").status_code == 404

@@ -412,6 +412,78 @@ class TimelapseProject:
                 self.conn.execute(f"UPDATE {C.MARKERS_TABLE} SET {S.q(data_label)} = ? WHERE Id = ?",
                                   (text, file_id))
 
+    def duplicate(self, file_id: int) -> int:
+        """Duplicate a record for the same media file (matching Timelapse's duplicate record feature)."""
+        self._ensure_writable()
+        with self.lock:
+            self._backup_if_needed()
+            row = self.conn.execute(f"SELECT * FROM {C.DATA_TABLE} WHERE Id = ?", (file_id,)).fetchone()
+            if row is None:
+                raise ProjectError("error.fileNotFound")
+
+            cols = [c.data_label for c in self.controls]
+            vals = []
+            for c in self.controls:
+                if c.data_label == C.DELETE_FLAG:
+                    vals.append(C.FALSE)
+                else:
+                    v = row[c.data_label]
+                    vals.append("" if v is None else str(v))
+
+            with self.conn:
+                sql = (f"INSERT INTO {C.DATA_TABLE} ({', '.join(S.q(c) for c in cols)}) "
+                       f"VALUES ({', '.join('?' for _ in cols)})")
+                cur = self.conn.execute(sql, vals)
+                new_id = cur.lastrowid
+
+                if _table_exists(self.conn, C.DETECTIONS):
+                    det_rows = self.conn.execute(
+                        f"SELECT detectionID, category, conf, bbox, classification, classification_conf "
+                        f"FROM {C.DETECTIONS} WHERE Id = ?",
+                        (file_id,)
+                    ).fetchall()
+                    has_video = _table_exists(self.conn, C.DETECTIONS_VIDEO)
+                    for dr in det_rows:
+                        d_cur = self.conn.execute(
+                            f"INSERT INTO {C.DETECTIONS} (category, conf, bbox, classification, "
+                            f"classification_conf, Id) VALUES (?, ?, ?, ?, ?, ?)",
+                            (dr["category"], dr["conf"], dr["bbox"], dr["classification"],
+                             dr["classification_conf"], new_id)
+                        )
+                        if has_video:
+                            new_det_id = d_cur.lastrowid
+                            v_rows = self.conn.execute(
+                                f"SELECT frame_number, frame_rate FROM {C.DETECTIONS_VIDEO} WHERE detectionID = ?",
+                                (dr["detectionID"],)
+                            ).fetchall()
+                            for vr in v_rows:
+                                self.conn.execute(
+                                    f"INSERT INTO {C.DETECTIONS_VIDEO} (frame_number, frame_rate, detectionID) "
+                                    f"VALUES (?, ?, ?)",
+                                    (vr["frame_number"], vr["frame_rate"], new_det_id)
+                                )
+            return new_id
+
+    def file_records_info(self, file_id: int) -> dict:
+        """Count how many records share the same RelativePath + File, and this file's 1-based index."""
+        row = self.file(file_id)
+        if row is None:
+            return {"index": 1, "total": 1}
+        rel = row["values"].get(C.RELATIVE_PATH, "")
+        file_name = row["values"].get(C.FILE, "")
+        with self.lock:
+            rows = self.conn.execute(
+                f"SELECT Id FROM {C.DATA_TABLE} WHERE RelativePath = ? AND File = ? ORDER BY Id",
+                (rel, file_name)
+            ).fetchall()
+        ids = [r[0] for r in rows]
+        total = len(ids)
+        try:
+            idx = ids.index(file_id) + 1
+        except ValueError:
+            idx = 1
+        return {"index": idx, "total": total}
+
     def add_controls(self, new_controls: list[dict], template_path: Path | None = None) -> list[Control]:
         """Append user controls to the .ddb (and its .tdb) as a Timelapse template sync would (spec §6).
 

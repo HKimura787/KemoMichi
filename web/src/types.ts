@@ -105,6 +105,8 @@ export interface FileDetail extends Row {
   fileRest?: { start_seconds: string; end_seconds: string; duration_seconds: string; interval_count: number } | null;
   kind: "image" | "video";
   exists: boolean;
+  recordIndex?: number;
+  recordTotal?: number;
 }
 
 export interface VideoInfo {

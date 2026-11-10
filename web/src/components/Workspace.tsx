@@ -292,6 +292,24 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     }
   };
 
+  const duplicateRecord = async () => {
+    if (!detail || project.readOnly) return;
+    try {
+      const res = await api.duplicateFile(detail.id);
+      toast.push("success", t("data.duplicated"));
+      const newIds = await api.ids(filter);
+      setIds(newIds);
+      rowsRef.current.set(res.row.id, res.row);
+      setRowsVersion((v) => v + 1);
+      const newIdx = newIds.indexOf(res.id);
+      if (newIdx >= 0) {
+        setIndex(newIdx);
+      }
+    } catch (e) {
+      toast.error(e);
+    }
+  };
+
   // ---- S/E -------------------------------------------------------------------------------
   const markStart = () => {
     if (!detail || project.readOnly) return;
@@ -490,6 +508,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
         {menuOpen && (
           <div className="menu" role="menu" onMouseLeave={() => setMenuOpen(false)}>
             <button role="menuitem" disabled={saving > 0} onClick={() => { setMenuOpen(false); onOpenProject(); }}>{t("menu.open")}</button>
+            <button role="menuitem" disabled={project.readOnly || !detail || bulkCount > 1} onClick={() => { setMenuOpen(false); void duplicateRecord(); }}>{t("data.duplicate")}</button>
             <button role="menuitem" disabled={project.readOnly} onClick={() => { setMenuOpen(false); setDialog("recognitions"); }}>{t("menu.importRecognitions")}</button>
             <button role="menuitem" onClick={async () => {
               setMenuOpen(false);
@@ -618,8 +637,10 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
           <div className="pane-head">{t("data.title")}</div>
           <div className="pane-body">
             <DataPanel controls={controls} row={detail ? { id: detail.id, values: detail.values } : null}
+                       detail={detail}
                        palette={palette} locked={locked} readOnly={project.readOnly} bulkCount={bulkCount}
-                       onChange={change} onCopyPrevious={copyPrevious} canCopyPrevious={index > 0} />
+                       onChange={change} onCopyPrevious={copyPrevious} canCopyPrevious={index > 0}
+                       onDuplicate={duplicateRecord} />
             {detail && bulkCount <= 1 && (
               <RestPanel kind={detail.kind} intervals={detail.intervals} pending={pending}
                          columns={project.settings.restColumns} onDelete={deleteInterval} onJump={jumpInterval}

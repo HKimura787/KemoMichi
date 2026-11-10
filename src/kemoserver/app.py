@@ -203,7 +203,21 @@ def create_app(config: ServerConfig) -> FastAPI:
         row["fileRest"] = ws.sidecar.file_rest(file_id)
         row["kind"] = "video" if media.is_video(p.media_path(row)) else "image"
         row["exists"] = p.media_path(row).exists()
+        rec_info = p.file_records_info(file_id)
+        row["recordIndex"] = rec_info["index"]
+        row["recordTotal"] = rec_info["total"]
         return row
+
+    @app.post("/api/files/{file_id}/duplicate")
+    def duplicate_file(file_id: int):
+        p = project()
+        file_or_404(file_id)
+        new_id = p.duplicate(file_id)
+        return {
+            "id": new_id,
+            "row": p.file(new_id),
+            "total": p.count({}),
+        }
 
     @app.patch("/api/files")
     def update_files(ids: list[int] = Body(...), values: dict = Body(...)):

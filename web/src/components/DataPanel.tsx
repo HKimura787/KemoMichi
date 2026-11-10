@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
 import { useI18n } from "../i18n";
-import type { Control, Palette, Row } from "../types";
+import type { Control, FileDetail, Palette, Row } from "../types";
 
 const TRUE = "true";
 
@@ -29,9 +29,10 @@ export function speciesChange(palette: Palette, row: Row | null, flag: string, o
   return values;
 }
 
-export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious }: {
+export function DataPanel({ controls, row, detail, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious, onDuplicate }: {
   controls: Control[];
   row: Row | null;
+  detail?: FileDetail | null;
   palette: Palette;
   locked: Set<string>;
   readOnly: boolean;
@@ -39,6 +40,7 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
   onChange: (values: Record<string, string>, confirmText?: string) => Promise<void>;
   onCopyPrevious: () => void;
   canCopyPrevious: boolean;
+  onDuplicate?: () => void;
 }) {
   const { t } = useI18n();
   const byLabel = new Map(controls.map((c) => [c.dataLabel, c]));
@@ -62,9 +64,30 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
     <>
       {bulk && <div className="bulk"><strong>{t("data.bulk", { count: bulkCount })}</strong><br />{t("data.bulkHint", { count: bulkCount })}</div>}
       {!bulk && row && (
-        <div className="field">
-          <span className="label">{t("data.file")}</span>
-          <span className="path">{row.values.RelativePath ? `${row.values.RelativePath}\\` : ""}{row.values.File}</span>
+        <div style={{ marginBottom: 12 }}>
+          <div className="field" style={{ marginBottom: onDuplicate ? 6 : undefined }}>
+            <span className="label">
+              {t("data.file")}
+              {detail?.recordTotal && detail.recordTotal > 1 ? (
+                <span style={{ marginLeft: 6, fontWeight: "normal", fontSize: "0.85em", opacity: 0.85 }}>
+                  {t("data.recordIndex", { current: detail.recordIndex, total: detail.recordTotal })}
+                </span>
+              ) : null}
+            </span>
+            <span className="path">{row.values.RelativePath ? `${row.values.RelativePath}\\` : ""}{row.values.File}</span>
+          </div>
+          {onDuplicate && (
+            <button
+              type="button"
+              className="btn small"
+              disabled={disabled}
+              onClick={onDuplicate}
+              title={t("data.duplicateHint")}
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              ＋ {t("data.duplicate")}
+            </button>
+          )}
         </div>
       )}
 
