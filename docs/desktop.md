@@ -70,9 +70,27 @@ PATH=/usr/bin:/bin dist/KemoMichi.app/Contents/MacOS/KemoMichi \
 ログと二重起動防止用の状態は、Macでは `~/Library/Application Support/KemoMichi`、
 Windowsでは `%LOCALAPPDATA%\KemoMichi` に保存します。「ログフォルダを開く」で確認できます。
 
+画像・動画のキャッシュは既定で2 GiBまで保持し、生成成功時に古いものから整理します。
+`KEMOMICHI_CACHE_MAX_BYTES` で容量を変更できます。保存先と例外は [メディアキャッシュ](media-cache.md) を参照してください。
+
+## Windows版をGitHub Actionsで作る
+
+Windows用インストーラーはWindows環境で作成します。このMacから直接ビルドする方式ではありません。
+GitHub Actionsを利用すると、手元にWindowsの開発環境を用意せずに作成できます。
+
+1. `.github/workflows/desktop-build.yml` を含む現在のブランチをGitHubへpushします。
+2. PRを作成します。対象ファイルの変更により **Desktop builds** が自動実行されます。
+3. GitHubの **Actions → Desktop builds** で、Windowsのビルドと自己テストが成功したことを確認します。
+4. その実行の **Artifacts → KemoMichi-Windows-x86_64** をダウンロードしてZIPを展開します。
+5. `windows/` 内の `KemoMichi-Windows-x86_64-setup.exe` がインストーラーです。
+   `KemoMichi-Windows-x86_64-portable.zip` は、展開して利用するポータブル版です。
+
+このワークフローはインストーラーの作成・自己テストまで行います。
+Windows実機での画面操作確認やコード署名は別途行います。GitHub Releasesへの公開は自動実行しません。
+
 ## 配布と公開前の作業
 
-ダウンロード・インストール手順は [README](../README.md#ダウンロードインストールmac--windows) にまとめます。
+ダウンロード・インストール手順は [download/README.md](../download/README.md) にまとめます。
 専用の公開ウェブサイトは使用しません。確認済みのインストーラーは直接渡すか、
 GitHub Actionsの成果物またはGitHub Releasesの添付ファイルとして配布できます。
 

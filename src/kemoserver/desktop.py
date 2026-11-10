@@ -207,7 +207,6 @@ def run_window(server: DesktopServer):
     frame = ttk.Frame(window, padding=24)
     frame.pack(fill="both", expand=True)
     ttk.Label(frame, text="KemoMichi", font=("", 24, "bold")).pack(anchor="w")
-    ttk.Label(frame, text="HDDのデータを、いつものブラウザで。", padding=(0, 8)).pack(anchor="w")
     status = tk.StringVar(value="起動しています…")
     ttk.Label(frame, textvariable=status, wraplength=440).pack(anchor="w", pady=12)
     row = ttk.Frame(frame)

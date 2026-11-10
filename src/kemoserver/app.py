@@ -8,7 +8,7 @@ import shutil
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from kemocore import __version__, media, rest
@@ -20,6 +20,7 @@ from kemocore.timelapse.project import ProjectError
 from kemocore.timelapse.recognitions import import_recognitions
 from kemocore.timelapse.template import ValueError_, make_data_label
 
+from .media_response import cached_file_response
 from .security import BasicAuthMiddleware, ServerConfig
 from .workspace import Jobs, Workspace
 
@@ -249,20 +250,18 @@ def create_app(config: ServerConfig) -> FastAPI:
     def thumb(file_id: int):
         path = media_file(file_id)
         if media.is_video(path):
-            rendition = media.video_thumbnail(path)
-            if rendition is None:
-                return Response(status_code=204)
-        else:
-            rendition = media.image_rendition(path, media.THUMB_SIZE)
-        return FileResponse(rendition, media_type="image/jpeg", headers=cache_headers)
+            return cached_file_response(lambda: media.video_thumbnail(path), media_type="image/jpeg",
+                                        headers=cache_headers)
+        return cached_file_response(lambda: media.image_rendition(path, media.THUMB_SIZE),
+                                    media_type="image/jpeg", headers=cache_headers)
 
     @app.get("/api/media/{file_id}/preview")
     def preview(file_id: int):
         path = media_file(file_id)
         if media.is_video(path):
             return thumb(file_id)
-        return FileResponse(media.image_rendition(path, media.PREVIEW_SIZE), media_type="image/jpeg",
-                            headers=cache_headers)
+        return cached_file_response(lambda: media.image_rendition(path, media.PREVIEW_SIZE),
+                                    media_type="image/jpeg", headers=cache_headers)
 
     @app.get("/api/media/{file_id}/original")
     def original(file_id: int):
@@ -273,10 +272,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     def video(file_id: int, format: str = "mp4"):
         path = media_file(file_id)
         container = "webm" if format == "webm" else "mp4"
-        playable = media.playable_video(path, container)
-        if playable is None:
-            raise HTTPException(415, detail={"error": "error.videoUnplayable"})
-        return FileResponse(playable, media_type=f"video/{container}", headers=cache_headers)
+        return cached_file_response(lambda: media.playable_video(path, container), media_type=f"video/{container}",
+                                    headers=cache_headers, missing_status=415)
 
     @app.get("/api/media/{file_id}/video-info")
     def video_info(file_id: int):
