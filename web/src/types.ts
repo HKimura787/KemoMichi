@@ -37,11 +37,15 @@ export interface Palette {
   single: boolean;
 }
 
-export interface RestColumns {
-  start: string | null;
-  end: string | null;
+export interface EventColumns {
+  entry: string | null;
+  exit: string | null;
+  exitFile: string | null;
+  startInside: string | null;
+  endInside: string | null;
   duration: string | null;
-  multi: "first" | "sum" | "list";
+  writeSpecies: boolean;
+  continuityGap: number;
 }
 
 export interface Project {
@@ -55,8 +59,10 @@ export interface Project {
   controls: Control[];
   total: number;
   hasRecognitions: boolean;
-  settings: { palette?: Palette; restColumns?: RestColumns; bboxThreshold?: number; [key: string]: unknown };
+  settings: { palette?: Palette; bboxThreshold?: number; [key: string]: unknown };
   lockedColumns: string[];
+  eventColumns: EventColumns;
+  duplicates: Record<string, number>;
   categories: { detection: Record<string, string>; classification: Record<string, string> };
   folders: { path: string; count: number }[];
   templatePath: string | null;
@@ -75,26 +81,38 @@ export interface Detection {
   frameRate: number | null;
 }
 
-export interface Interval {
+/** One animal's stay in the focal area, entry to exit, possibly across several files. */
+export interface RestEvent {
   id: number;
-  kind: "video" | "sequence";
-  file_id: number;
-  start_frame: number | null;
-  end_frame: number | null;
-  start_file_id: number | null;
-  end_file_id: number | null;
-  start_seconds: string;
-  end_seconds: string;
-  duration_seconds: string;
-  individual: string;
   species: string;
+  individual: string;
   note: string;
+  start_file_id: number;
+  start_frame: number | null;
+  start_inside: boolean;
+  end_file_id: number | null;
+  end_frame: number | null;
+  end_inside: boolean;
+  open: boolean;
+  startFile: string;
+  startFolder: string;
+  startDateTime: string;
+  endFile: string;
+  endFolder: string;
+  endDateTime: string;
+  entrySeconds: string | null;
+  exitSeconds: string | null;
+  sameFile: boolean;
+  durationSeconds: string | null;
+  elapsedSeconds: string | null;
 }
 
 export interface FileDetail extends Row {
   detections: Detection[];
   markers: Record<string, [number, number][]>;
-  intervals: Interval[];
+  events: RestEvent[];
+  sameFileRows: number[];
+  duplicateOf: number | null;
   kind: "image" | "video";
   exists: boolean;
 }

@@ -210,6 +210,10 @@ class TimelapseProject:
                     sub += " AND category <> '0'"
                 clauses.append(f"Id IN ({sub})")
                 params += sub_params
+        if flt.get("excludeIds"):
+            excluded = [int(i) for i in flt["excludeIds"]]
+            clauses.append(f"Id NOT IN ({','.join('?' for _ in excluded)})")
+            params += excluded
         if flt.get("ids"):
             ids = [int(i) for i in flt["ids"]]
             clauses.append(f"Id IN ({','.join('?' for _ in ids)})")
@@ -330,8 +334,13 @@ class TimelapseProject:
             backup_file(self.path)
             self._backed_up_this_session = True
 
-    def update(self, file_ids: list[int], values: dict[str, object], description: str = "") -> Batch:
-        """Set the same values on every file. Validates every value first; all or nothing."""
+    def update(self, file_ids: list[int], values: dict[str, object], description: str = "",
+               record_undo: bool = True) -> Batch:
+        """Set the same values on every file. Validates every value first; all or nothing.
+
+        `record_undo=False` is for values derived from other records (events), which are rewritten
+        from their source whenever it changes, so undoing them on their own would only desync them.
+        """
         self._ensure_writable()
         normalized: dict[str, str] = {}
         for label, value in values.items():
@@ -358,10 +367,47 @@ class TimelapseProject:
                         if old != normalized[label]:
                             batch.changes.append(Change(row["Id"], label, old, normalized[label]))
             self._apply(batch.changes, forward=True)
-        if batch.changes:
+        if batch.changes and record_undo:
             self.undo_stack.append(batch)
             self.redo_stack.clear()
         return batch
+
+    def same_file_ids(self, file_id: int) -> list[int]:
+        """Every DataTable row for the same file (Timelapse allows duplicates), oldest first."""
+        with self.lock:
+            row = self.conn.execute(f"SELECT File, RelativePath FROM {C.DATA_TABLE} WHERE Id = ?",
+                                    (file_id,)).fetchone()
+            if row is None:
+                return []
+            return [r[0] for r in self.conn.execute(
+                f"SELECT Id FROM {C.DATA_TABLE} WHERE File = ? AND RelativePath = ? ORDER BY Id",
+                (row["File"], row["RelativePath"]))]
+
+    def duplicate_row(self, source_id: int) -> int:
+        """Add a copy of a row, like Timelapse's duplicate record. Returns the new Id."""
+        self._ensure_writable()
+        labels = [c.data_label for c in self.controls]
+        cols = ", ".join(S.q(l) for l in labels)
+        with self.lock:
+            self._backup_if_needed()
+            with self.conn:
+                cur = self.conn.execute(
+                    f"INSERT INTO {C.DATA_TABLE} ({cols}) SELECT {cols} FROM {C.DATA_TABLE} WHERE Id = ?",
+                    (source_id,))
+            return cur.lastrowid
+
+    def delete_rows(self, ids: list[int]) -> None:
+        """Remove rows (and their markers) without touching the media files."""
+        self._ensure_writable()
+        if not ids:
+            return
+        marks = ",".join("?" for _ in ids)
+        with self.lock:
+            self._backup_if_needed()
+            with self.conn:
+                if _table_exists(self.conn, C.MARKERS_TABLE):
+                    self.conn.execute(f"DELETE FROM {C.MARKERS_TABLE} WHERE Id IN ({marks})", ids)
+                self.conn.execute(f"DELETE FROM {C.DATA_TABLE} WHERE Id IN ({marks})", ids)
 
     def _apply(self, changes: list[Change], forward: bool) -> None:
         with self.conn:

@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, forwardRef } from "react";
 import { mediaUrl } from "../api";
 import { useI18n } from "../i18n";
-import type { ColorAdjust, Detection, FileDetail, Guide, Interval, ShapeKind, VideoInfo } from "../types";
+import type { ColorAdjust, Detection, FileDetail, Guide, ShapeKind, VideoInfo } from "../types";
 
 // Colour-blind-safe annotation colours (Okabe & Ito 2008), design system §2.7.
 export const ANNOTATION_COLORS = ["#E69F00", "#56B4E9", "#009E73", "#F0E442", "#0072B2", "#D55E00", "#CC79A7", "#FFFFFF"];
@@ -34,8 +34,6 @@ interface Props {
   drawing: ShapeKind | null;
   onDrawn: (shape: ShapeKind, points: [number, number][]) => void;
   videoInfo: VideoInfo | null;
-  intervals: Interval[];
-  pendingStartFrame: number | null;
   onFrame: (frame: number) => void;
 }
 
@@ -311,9 +309,12 @@ export function GuideShape({ guide, w, h, lw, dashed }: { guide: Guide; w: numbe
   );
 }
 
-export function Timeline({ frame, total, frameTimes, intervals, pendingStartFrame, onSeek, exact, fileId }: {
-  frame: number; total: number; frameTimes: number[]; intervals: Interval[]; pendingStartFrame: number | null;
-  onSeek: (frame: number) => void; exact: boolean; fileId: number;
+/** A bar on the timeline: an event's part inside this video. `end` null means it is still open. */
+export interface Segment { key: number; start: number; end: number | null; label: string; carriedIn: boolean; carriedOut: boolean }
+
+export function Timeline({ frame, total, frameTimes, segments, onSeek, exact }: {
+  frame: number; total: number; frameTimes: number[]; segments: Segment[];
+  onSeek: (frame: number) => void; exact: boolean;
 }) {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -324,6 +325,18 @@ export function Timeline({ frame, total, frameTimes, intervals, pendingStartFram
     onSeek(Math.round(((clientX - rect.left) / rect.width) * (total - 1)));
   };
   const seconds = frameTimes[frame] ?? 0;
+  // Events that overlap in time (several animals) go on separate lanes so their bars do not cover each other.
+  const LANE = 26;
+  const laneEnds: number[] = [];
+  const placed = [...segments].sort((x, y) => x.start - y.start).map((s) => {
+    const end = s.end ?? frame;
+    const a = Math.min(s.start, end), b = Math.max(s.start, end);
+    let lane = laneEnds.findIndex((e) => e < a);
+    if (lane < 0) lane = laneEnds.length;
+    laneEnds[lane] = b;
+    return { s, a, b, lane };
+  });
+  const height = Math.max(1, laneEnds.length) * LANE + 6;
   return (
     <div className="timeline">
       <div className="tc">
@@ -331,7 +344,7 @@ export function Timeline({ frame, total, frameTimes, intervals, pendingStartFram
         <span>{t("video.frame", { frame, total: Math.max(0, total - 1) })}</span>
         {!exact && <span title={t("video.approx")}>≈</span>}
       </div>
-      <div className="track" ref={trackRef}
+      <div className="track" ref={trackRef} style={{ height }}
            onMouseDown={(e) => {
              seekFrom(e.clientX);
              const move = (ev: MouseEvent) => seekFrom(ev.clientX);
@@ -339,16 +352,14 @@ export function Timeline({ frame, total, frameTimes, intervals, pendingStartFram
              window.addEventListener("mousemove", move);
              window.addEventListener("mouseup", up);
            }}>
-        {intervals.filter((i) => i.kind === "video" && i.file_id === fileId).map((i, n) => (
-          <div key={i.id} className="seg" style={{ left: `${pct(i.start_frame ?? 0)}%`,
-            width: `${Math.max(0.5, pct(i.end_frame ?? 0) - pct(i.start_frame ?? 0))}%` }}>
-            {n + 1}
-          </div>
-        ))}
-        {pendingStartFrame !== null && (
-          <div className="seg pending" style={{ left: `${pct(Math.min(pendingStartFrame, frame))}%`,
-            width: `${Math.abs(pct(frame) - pct(pendingStartFrame))}%` }} />
-        )}
+        {placed.map(({ s, a, b, lane }) => {
+          return (
+            <div key={s.key} className={`seg${s.end === null ? " pending" : ""}`}
+                 style={{ left: `${pct(a)}%`, width: `${Math.max(0.5, pct(b) - pct(a))}%`, top: 4 + lane * LANE }}>
+              {s.carriedIn ? "◀ " : ""}{s.label}{s.carriedOut ? " ▶" : ""}
+            </div>
+          );
+        })}
         <div className="head" style={{ left: `calc(${pct(frame)}% - 1px)` }} />
       </div>
     </div>

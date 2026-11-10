@@ -1,56 +1,82 @@
 import { useI18n } from "../i18n";
-import type { ColorAdjust, Guide, Interval, RestColumns, ShapeKind } from "../types";
-import { formatTimecode, NEUTRAL_COLOR } from "./Viewer";
+import type { ColorAdjust, Guide, RestEvent, ShapeKind } from "../types";
+import { NEUTRAL_COLOR } from "./Viewer";
 
-export interface PendingStart {
-  kind: "video" | "sequence";
-  fileId: number;
-  frame?: number;
-  label: string;
-}
-
-export function RestPanel({ kind, intervals, pending, columns, onDelete, onJump, onCancelPending, readOnly, frameTimes }: {
+export function EventPanel({ kind, fileId, events, openEvents, speciesLabel, configured, readOnly, onDelete, onJump,
+                            onEnd, onReopen, onSpecies, palette }: {
   kind: "image" | "video";
-  intervals: Interval[];
-  pending: PendingStart | null;
-  columns: RestColumns | undefined;
-  onDelete: (id: number) => void;
-  onJump: (interval: Interval) => void;
-  onCancelPending: () => void;
+  fileId: number;
+  events: RestEvent[];
+  openEvents: RestEvent[];
+  speciesLabel: (flag: string) => string;
+  configured: boolean;
   readOnly: boolean;
-  frameTimes: number[];
+  onDelete: (id: number) => void;
+  onJump: (e: RestEvent, where: "start" | "end") => void;
+  onEnd: (e: RestEvent, inside: boolean) => void;
+  onReopen: (e: RestEvent) => void;
+  onSpecies: (e: RestEvent, species: string) => void;
+  palette: { flag: string }[];
 }) {
   const { t } = useI18n();
-  const configured = columns && (columns.start || columns.end || columns.duration);
+  const here = events.filter((e) => e.start_file_id === fileId || e.end_file_id === fileId);
+  const elsewhereOpen = openEvents.filter((e) => e.start_file_id !== fileId);
+  const point = (e: RestEvent, side: "start" | "end") => {
+    if (side === "start") {
+      if (e.start_inside) return t("event.insideAtStart", { file: e.startFile });
+      return t("event.at", { file: e.startFile, seconds: e.entrySeconds ?? "?" });
+    }
+    if (e.open) return t("event.stillOpen");
+    if (e.end_inside) return t("event.insideAtEnd", { file: e.endFile });
+    return t("event.at", { file: e.endFile, seconds: e.exitSeconds ?? "?" });
+  };
+  const row = (e: RestEvent, n: number) => (
+    <div key={e.id} className="interval" style={{ gridTemplateColumns: "1fr" }}>
+      <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
+        <span className="dur">{n}.</span>
+        <select value={e.species} disabled={readOnly} aria-label={t("data.species")} style={{ width: "auto", minHeight: 28 }}
+                onChange={(ev) => onSpecies(e, ev.target.value)}>
+          <option value="">—</option>
+          {palette.map((p) => <option key={p.flag} value={p.flag}>{speciesLabel(p.flag)}</option>)}
+        </select>
+        {e.open ? <span className="chip" aria-pressed="true">{t("event.open")}</span>
+          : <span className="dur">{e.durationSeconds !== null ? t("rest.duration", { seconds: e.durationSeconds })
+            : e.elapsedSeconds !== null ? t("event.elapsed", { seconds: e.elapsedSeconds }) : ""}</span>}
+      </div>
+      <div className="note">{t("event.entry")}: {point(e, "start")}</div>
+      <div className="note">{t("event.exit")}: {point(e, "end")}</div>
+      <div style={{ display: "flex", gap: 4, flexWrap: "wrap" }}>
+        {e.open ? (
+          <>
+            <button className="btn small" disabled={readOnly} onClick={() => onEnd(e, false)}>{t("event.endHere")}</button>
+            <button className="btn small" disabled={readOnly} onClick={() => onEnd(e, true)}>{t("event.endInside")}</button>
+          </>
+        ) : (
+          <button className="btn small" disabled={readOnly} onClick={() => onReopen(e)}>{t("event.reopen")}</button>
+        )}
+        <button className="btn small" onClick={() => onJump(e, "start")}>{t("event.goStart")}</button>
+        {!e.open && !e.sameFile && <button className="btn small" onClick={() => onJump(e, "end")}>{t("event.goEnd")}</button>}
+        <button className="btn small" disabled={readOnly} onClick={() => onDelete(e.id)}>{t("rest.delete")}</button>
+      </div>
+    </div>
+  );
   return (
     <>
-      <div className="section-title">{t("rest.title")}</div>
+      <div className="section-title">{t("event.title")}</div>
       <p className="note" style={{ margin: 0 }}>
-        <kbd>S</kbd> / <kbd>E</kbd> — {kind === "video" ? t("rest.hintVideo") : t("rest.hintSequence")}
+        <kbd>S</kbd> {kind === "video" ? t("event.keyS") : t("event.keySImage")}・<kbd>Shift+S</kbd> {t("event.keyShiftS")}<br />
+        <kbd>E</kbd> {kind === "video" ? t("event.keyE") : t("event.keyEImage")}・<kbd>Shift+E</kbd> {t("event.keyShiftE")}
       </p>
-      {!configured && <p className="note" style={{ margin: 0, color: "var(--km-warning)" }}>! {t("rest.noColumns")}</p>}
-      {pending && (
+      {!configured && <p className="note" style={{ margin: 0, color: "var(--km-warning)" }}>! {t("event.noColumns")}</p>}
+      {elsewhereOpen.length > 0 && (
         <div className="bulk" role="status">
-          {t("rest.started", { at: pending.label })}{" "}
-          <button className="btn text small" onClick={onCancelPending}>{t("rest.cancelStart")}</button>
+          <strong>{t("event.carried", { count: elsewhereOpen.length })}</strong>
+          <div className="intervals">{elsewhereOpen.map((e, i) => row(e, i + 1))}</div>
         </div>
       )}
       <div className="intervals">
-        {intervals.length === 0 && <span className="note">{t("rest.none")}</span>}
-        {intervals.map((i, n) => (
-          <div key={i.id} className="interval">
-            <div>
-              <span className="dur">{n + 1}. {t("rest.duration", { seconds: i.duration_seconds })}</span>
-              <div className="note">
-                {i.kind === "video"
-                  ? `${t("rest.frames", { start: i.start_frame, end: i.end_frame })} (${formatTimecode(frameTimes[i.start_frame ?? 0] ?? 0)})`
-                  : t("rest.images", { start: i.start_file_id, end: i.end_file_id })}
-              </div>
-            </div>
-            <button className="btn small" onClick={() => onJump(i)}>{t("rest.jump")}</button>
-            <button className="btn small" disabled={readOnly} onClick={() => onDelete(i.id)}>{t("rest.delete")}</button>
-          </div>
-        ))}
+        {here.length === 0 && <span className="note">{t("rest.none")}</span>}
+        {here.map((e, i) => row(e, i + 1))}
       </div>
     </>
   );

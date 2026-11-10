@@ -1,4 +1,12 @@
-import type { FileDetail, Filter, Info, Project, Row, VideoInfo } from "./types";
+import type { FileDetail, Filter, Info, Project, RestEvent, Row, VideoInfo } from "./types";
+
+export interface EventResult {
+  event: RestEvent | null;
+  open: RestEvent[];
+  rows: Row[];
+  duplicates: Record<string, number>;
+  warning: string | null;
+}
 
 export class ApiError extends Error {
   constructor(public key: string, public params: Record<string, unknown> = {}, public status = 0) {
@@ -61,9 +69,14 @@ export const api = {
   importRecognitions: (path: string) => request<{ report: any }>("POST", "/api/recognitions/import", { path }),
   exportCsv: () => request<{ path: string }>("POST", "/api/export/csv", {}),
   videoInfo: (id: number) => request<VideoInfo>("GET", `/api/media/${id}/video-info`),
-  createInterval: (data: Record<string, unknown>) => request<any>("POST", "/api/intervals", data),
-  updateInterval: (id: number, data: Record<string, unknown>) => request<any>("PUT", `/api/intervals/${id}`, data),
-  deleteInterval: (id: number) => request<any>("DELETE", `/api/intervals/${id}`),
+  openEvents: () => request<RestEvent[]>("GET", "/api/events?open=true"),
+  startEvent: (data: { fileId: number; frame: number | null; inside: boolean; species: string; individual?: string }) =>
+    request<EventResult>("POST", "/api/events", data),
+  endEvent: (id: number, data: { fileId: number; frame: number | null; inside: boolean }) =>
+    request<EventResult>("POST", `/api/events/${id}/end`, data),
+  changeEvent: (id: number, changes: Record<string, unknown>) => request<EventResult>("PUT", `/api/events/${id}`, changes),
+  deleteEvent: (id: number) => request<EventResult>("DELETE", `/api/events/${id}`),
+  exportEvents: () => request<{ path: string }>("POST", "/api/export/events"),
   setMarkers: (id: number, dataLabel: string, points: [number, number][]) =>
     request("PUT", `/api/files/${id}/markers`, { dataLabel, points }),
 };

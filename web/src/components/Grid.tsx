@@ -7,7 +7,7 @@ import type { Row } from "../types";
 const TILE = 200;
 const GAP = 8;
 
-export function Grid({ ids, rows, need, selection, currentId, onPick, onOpen, speciesLabels }: {
+export function Grid({ ids, rows, need, selection, currentId, onPick, onOpen, speciesLabels, duplicates }: {
   ids: number[];
   rows: Map<number, Row>;
   need: (ids: number[]) => void;
@@ -16,6 +16,7 @@ export function Grid({ ids, rows, need, selection, currentId, onPick, onOpen, sp
   onPick: (id: number, index: number, e: React.MouseEvent) => void;
   onOpen: (index: number) => void;
   speciesLabels: (row: Row) => string[];
+  duplicates: Record<string, number>;
 }) {
   const { t } = useI18n();
   const parentRef = useRef<HTMLDivElement>(null);
@@ -75,6 +76,7 @@ export function Grid({ ids, rows, need, selection, currentId, onPick, onOpen, sp
                   {selected && <span className="badge">{order}</span>}
                   {deleted && <span className="del">{t("grid.deleted")}</span>}
                   {isVideo && <span className="video">▶</span>}
+                  {duplicates[String(id)] !== undefined && <span className="dup">{t("grid.eventRow")}</span>}
                   <span className="labels">{labels.length ? labels.join(", ") : row?.values.File ?? "…"}</span>
                 </div>
               );

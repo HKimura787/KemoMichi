@@ -29,7 +29,8 @@ export function speciesChange(palette: Palette, row: Row | null, flag: string, o
   return values;
 }
 
-export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious }: {
+export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious,
+                            afterSpecies }: {
   controls: Control[];
   row: Row | null;
   palette: Palette;
@@ -39,6 +40,7 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
   onChange: (values: Record<string, string>, confirmText?: string) => Promise<void>;
   onCopyPrevious: () => void;
   canCopyPrevious: boolean;
+  afterSpecies?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const byLabel = new Map(controls.map((c) => [c.dataLabel, c]));
@@ -110,6 +112,8 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
           })}
         </div>
       )}
+
+      {afterSpecies}
 
       <div className="section-title">{t("data.other")}</div>
       {!bulk && (

@@ -81,9 +81,13 @@ def demo_controls() -> list[Control]:
         control(C.FIXED_CHOICE, "Light", "Light", "", ["Day", "Night", "Twilight"]),
         control(C.MULTI_CHOICE, "Behaviour", "Behaviour", "", ["Walking", "Feeding", "Resting", "Looking"]),
         control(C.NOTE, "Note", "Note"),
-        control(C.DECIMAL_POSITIVE, "Stay start (s)", "StayStart", "0", width="60"),
-        control(C.DECIMAL_POSITIVE, "Stay end (s)", "StayEnd", "0", width="60"),
-        control(C.DECIMAL_POSITIVE, "Stay duration (s)", "StayDuration", "0", width="60"),
+        # REST event fields: one row per event (see kemocore.events)
+        control(C.FLAG, "Inside at start", "InsideAtStart", C.FALSE, width="20"),
+        control(C.DECIMAL_POSITIVE, "Entry (s)", "EntrySec", "", width="60"),
+        control(C.NOTE, "Exit file", "ExitFile"),
+        control(C.DECIMAL_POSITIVE, "Exit (s)", "ExitSec", "", width="60"),
+        control(C.FLAG, "Inside at end", "InsideAtEnd", C.FALSE, width="20"),
+        control(C.DECIMAL_POSITIVE, "Stay (s)", "StayDuration", "", width="60"),
         control(C.FLAG, "Unclear", "Unclear", C.FALSE, width="20"),
     ]
     return controls
@@ -97,4 +101,13 @@ def create_demo_project(root: Path) -> Path:
     create_template(template, demo_controls())
     ddb = root / C.DEFAULT_DDB_NAME
     create_data_file(ddb, template)
+    # Ready to try: the species palette and where REST event results go.
+    from .sidecar import Sidecar
+    sidecar = Sidecar(ddb)
+    sidecar.set("palette", {"items": [{"flag": name, "counter": f"{name}Count", "key": str(i + 1)}
+                                      for i, name in enumerate(DEMO_SPECIES)], "single": False})
+    sidecar.set("eventColumns", {"entry": "EntrySec", "exit": "ExitSec", "exitFile": "ExitFile",
+                                 "startInside": "InsideAtStart", "endInside": "InsideAtEnd",
+                                 "duration": "StayDuration", "writeSpecies": True})
+    sidecar.close()
     return ddb

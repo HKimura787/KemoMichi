@@ -1,7 +1,7 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { api } from "../api";
 import { useI18n } from "../i18n";
-import type { Info, Palette, Project, RestColumns } from "../types";
+import type { EventColumns, Info, Palette, Project } from "../types";
 import { Dialog, FileBrowser, useToast } from "../ui";
 
 export function SettingsDialog({ project, palette, onClose, onProject }: {
@@ -20,13 +20,12 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
       counter: byFlag.get(f.dataLabel)?.counter ?? null, key: byFlag.get(f.dataLabel)?.key ?? "" }));
   });
   const [single, setSingle] = useState(palette.single);
-  const rest = project.settings.restColumns;
-  const [restColumns, setRestColumns] = useState<RestColumns>({
-    start: rest?.start ?? null, end: rest?.end ?? null, duration: rest?.duration ?? null, multi: rest?.multi ?? "first",
-  });
+  const [eventColumns, setEventColumns] = useState<EventColumns>({ ...project.eventColumns });
   const [threshold, setThreshold] = useState<number>(Number(project.settings.bboxThreshold ?? 0.2));
-  const restTargets = project.controls.filter((c) =>
-    ["Note", "MultiLine", "DecimalAny", "DecimalPositive", "IntegerAny", "IntegerPositive", "DateTime_", "Time_"].includes(c.type));
+  const numberTargets = project.controls.filter((c) =>
+    ["Note", "MultiLine", "DecimalAny", "DecimalPositive", "IntegerAny", "IntegerPositive"].includes(c.type));
+  const textTargets = project.controls.filter((c) => ["Note", "MultiLine", "AlphaNumeric"].includes(c.type));
+  const flagTargets = project.controls.filter((c) => c.type === "Flag");
 
   const save = async () => {
     try {
@@ -34,7 +33,7 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
         items: items.filter((i) => i.use).map(({ flag, counter, key }) => ({ flag, counter, key })), single,
       };
       await api.setSetting("palette", newPalette);
-      await api.setSetting("restColumns", restColumns);
+      await api.setSetting("eventColumns", eventColumns);
       await api.setSetting("bboxThreshold", threshold);
       onProject(await api.project());
       onClose();
@@ -59,16 +58,19 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
     }
   };
 
-  const column = (key: "start" | "end" | "duration") => (
-    <div className="field">
-      <label htmlFor={`rest-${key}`}>{t(`settings.rest${key[0].toUpperCase()}${key.slice(1)}`)}</label>
-      <select id={`rest-${key}`} value={restColumns[key] ?? ""}
-              onChange={(e) => setRestColumns({ ...restColumns, [key]: e.target.value || null })}>
-        <option value="">{t("settings.none")}</option>
-        {restTargets.map((c) => <option key={c.dataLabel} value={c.dataLabel}>{c.label} ({c.dataLabel})</option>)}
-      </select>
-    </div>
-  );
+  const column = (key: "entry" | "exit" | "exitFile" | "startInside" | "endInside" | "duration") => {
+    const targets = key === "exitFile" ? textTargets : key === "startInside" || key === "endInside" ? flagTargets : numberTargets;
+    return (
+      <div className="field">
+        <label htmlFor={`ev-${key}`}>{t(`settings.event.${key}`)}</label>
+        <select id={`ev-${key}`} value={eventColumns[key] ?? ""}
+                onChange={(e) => setEventColumns({ ...eventColumns, [key]: e.target.value || null })}>
+          <option value="">{t("settings.none")}</option>
+          {targets.map((c) => <option key={c.dataLabel} value={c.dataLabel}>{c.label} ({c.dataLabel})</option>)}
+        </select>
+      </div>
+    );
+  };
 
   return (
     <Dialog title={t("settings.title")} onClose={onClose} wide
@@ -122,16 +124,21 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
         </button>
       )}
 
-      <div className="section-title">{t("settings.rest")}</div>
+      <div className="section-title">{t("settings.events")}</div>
+      <p className="note" style={{ margin: 0 }}>{t("settings.eventsLead")}</p>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
-        {column("start")}{column("end")}{column("duration")}
+        {column("startInside")}{column("entry")}{column("duration")}
+        {column("exitFile")}{column("exit")}{column("endInside")}
       </div>
-      <div className="field">
-        <label htmlFor="rest-multi">{t("settings.restMulti")}</label>
-        <select id="rest-multi" value={restColumns.multi}
-                onChange={(e) => setRestColumns({ ...restColumns, multi: e.target.value as RestColumns["multi"] })}>
-          {(["first", "sum", "list"] as const).map((m) => <option key={m} value={m}>{t(`settings.multi.${m}`)}</option>)}
-        </select>
+      <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
+        <input type="checkbox" checked={eventColumns.writeSpecies}
+               onChange={(e) => setEventColumns({ ...eventColumns, writeSpecies: e.target.checked })} />
+        {t("settings.event.writeSpecies")}
+      </label>
+      <div className="field" style={{ maxWidth: 320 }}>
+        <label htmlFor="ev-gap">{t("settings.event.gap")}</label>
+        <input id="ev-gap" type="number" min={0} value={eventColumns.continuityGap}
+               onChange={(e) => setEventColumns({ ...eventColumns, continuityGap: Number(e.target.value) || 0 })} />
       </div>
 
       {project.hasRecognitions && (
@@ -194,6 +201,7 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
     ["Space", t("sc.play")],
     ["1 … 9, 0", t("sc.species")],
     ["S / E", t("sc.se")],
+    ["Shift+S / Shift+E", t("sc.seShift")],
     ["G", t("sc.guides")],
     ["B", t("sc.bboxes")],
     ["A", t("sc.compare")],
@@ -209,6 +217,37 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
       <table className="plain">
         <tbody>{rows.map(([k, v]) => <tr key={k}><td><kbd>{k}</kbd></td><td>{v}</td></tr>)}</tbody>
       </table>
+    </Dialog>
+  );
+}
+
+/** Pick one option with the mouse or a number key (1-9). */
+export function ChoiceDialog({ title, options, onDone }: {
+  title: string; options: { value: string; label: string }[]; onDone: (value: string | null) => void;
+}) {
+  const { t } = useI18n();
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      const n = Number(e.key);
+      if (Number.isInteger(n) && n >= 1 && n <= options.length) {
+        e.preventDefault();
+        e.stopPropagation();
+        onDone(options[n - 1].value);
+      }
+    };
+    window.addEventListener("keydown", onKey, true);
+    return () => window.removeEventListener("keydown", onKey, true);
+  }, [options, onDone]);
+  return (
+    <Dialog title={title} onClose={() => onDone(null)}
+            actions={<button className="btn" onClick={() => onDone(null)}>{t("dialog.cancel")}</button>}>
+      <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+        {options.map((o, i) => (
+          <button key={o.value} className="btn" style={{ justifyContent: "flex-start" }} onClick={() => onDone(o.value)}>
+            {i < 9 && <kbd>{i + 1}</kbd>} {o.label}
+          </button>
+        ))}
+      </div>
     </Dialog>
   );
 }
