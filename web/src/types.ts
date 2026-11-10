@@ -56,6 +56,8 @@ export interface Palette {
 }
 
 export interface EventColumns {
+  speciesName: string | null;
+  individual: string | null;
   entry: string | null;
   exit: string | null;
   exitFile: string | null;

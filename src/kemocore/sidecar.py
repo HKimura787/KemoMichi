@@ -184,11 +184,21 @@ class Sidecar:
                     values + [now, data["id"]])
                 event_id = data["id"]
             else:
+                if not values[_EVENT_COLUMNS.index("individual")]:
+                    values[_EVENT_COLUMNS.index("individual")] = str(self._next_individual())
                 cur = self.conn.execute(
                     f"INSERT INTO events ({', '.join(_EVENT_COLUMNS)}, created_at, updated_at) "
                     f"VALUES ({', '.join('?' for _ in _EVENT_COLUMNS)}, ?, ?)", values + [now, now])
                 event_id = cur.lastrowid
         return self.event(event_id)
+
+    def _next_individual(self) -> int:
+        """Project-wide running number for new events; never reused, so IDs stay unique."""
+        row = self.conn.execute("SELECT value FROM meta WHERE key = 'next_individual'").fetchone()
+        used = [int(r[0]) for r in self.conn.execute("SELECT individual FROM events") if str(r[0]).isdigit()]
+        number = max([int(row[0]) if row else 1] + [u + 1 for u in used])
+        self.conn.execute("INSERT OR REPLACE INTO meta VALUES ('next_individual', ?)", (str(number + 1),))
+        return number
 
     def delete_event(self, event_id: int) -> dict | None:
         existing = self.event(event_id)

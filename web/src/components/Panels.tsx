@@ -3,7 +3,7 @@ import type { ColorAdjust, Guide, RestEvent, ShapeKind } from "../types";
 import { NEUTRAL_COLOR } from "./Viewer";
 
 export function EventPanel({ kind, fileId, events, openEvents, speciesLabel, configured, readOnly, onDelete, onJump,
-                            onEnd, onReopen, onSpecies, palette }: {
+                            onEnd, onReopen, onSpecies, onIndividual, palette }: {
   kind: "image" | "video";
   fileId: number;
   events: RestEvent[];
@@ -16,6 +16,7 @@ export function EventPanel({ kind, fileId, events, openEvents, speciesLabel, con
   onEnd: (e: RestEvent, inside: boolean) => void;
   onReopen: (e: RestEvent) => void;
   onSpecies: (e: RestEvent, species: string) => void;
+  onIndividual: (e: RestEvent, individual: string) => void;
   palette: { flag: string }[];
 }) {
   const { t } = useI18n();
@@ -30,15 +31,20 @@ export function EventPanel({ kind, fileId, events, openEvents, speciesLabel, con
     if (e.end_inside) return t("event.insideAtEnd", { file: e.endFile });
     return t("event.at", { file: e.endFile, seconds: e.exitSeconds ?? "?" });
   };
-  const row = (e: RestEvent, n: number) => (
+  const row = (e: RestEvent) => (
     <div key={e.id} className="interval" style={{ gridTemplateColumns: "1fr" }}>
       <div style={{ display: "flex", gap: 6, alignItems: "center", flexWrap: "wrap" }}>
-        <span className="dur">{n}.</span>
+        <span className="dur">#</span>
         <select value={e.species} disabled={readOnly} aria-label={t("data.species")} style={{ width: "auto", minHeight: 28 }}
                 onChange={(ev) => onSpecies(e, ev.target.value)}>
           <option value="">—</option>
           {palette.map((p) => <option key={p.flag} value={p.flag}>{speciesLabel(p.flag)}</option>)}
         </select>
+        <input type="text" defaultValue={e.individual} key={`${e.id}-${e.individual}`} disabled={readOnly}
+               placeholder={t("event.individualPlaceholder")} aria-label={t("event.individual")}
+               style={{ width: 72, minHeight: 28 }}
+               onBlur={(ev) => ev.target.value !== e.individual && onIndividual(e, ev.target.value)}
+               onKeyDown={(ev) => { if (ev.key === "Enter") (ev.target as HTMLInputElement).blur(); }} />
         {e.open ? <span className="chip" aria-pressed="true">{t("event.open")}</span>
           : <span className="dur">{e.durationSeconds !== null ? t("rest.duration", { seconds: e.durationSeconds }) : ""}</span>}
       </div>
@@ -70,12 +76,12 @@ export function EventPanel({ kind, fileId, events, openEvents, speciesLabel, con
       {elsewhereOpen.length > 0 && (
         <div className="bulk" role="status">
           <strong>{t("event.carried", { count: elsewhereOpen.length })}</strong>
-          <div className="intervals">{elsewhereOpen.map((e, i) => row(e, i + 1))}</div>
+          <div className="intervals">{elsewhereOpen.map((e) => row(e))}</div>
         </div>
       )}
       <div className="intervals">
         {here.length === 0 && <span className="note">{t("rest.none")}</span>}
-        {here.map((e, i) => row(e, i + 1))}
+        {here.map((e) => row(e))}
       </div>
     </>
   );

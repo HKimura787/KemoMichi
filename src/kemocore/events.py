@@ -25,7 +25,7 @@ from .timelapse import constants as C
 from .timelapse.project import ProjectError, TimelapseProject
 
 SETTINGS_KEY = "eventColumns"
-COLUMN_KEYS = ("entry", "exit", "exitFile", "startInside", "endInside", "duration")
+COLUMN_KEYS = ("speciesName", "individual", "entry", "exit", "exitFile", "startInside", "endInside", "duration")
 FLAG_KEYS = ("startInside", "endInside")
 DEFAULT_CONTINUITY_GAP = 120  # seconds between consecutive videos of one stay
 
@@ -150,6 +150,18 @@ def _format_for(project: TimelapseProject, label: str, value: str | None) -> str
     return value
 
 
+def _species_text(project: TimelapseProject, label: str, species_flag: str) -> str:
+    """The species as text: the Flag's label, or its data label if only that is one of the choices."""
+    flag = project.by_label.get(species_flag)
+    if flag is None:
+        return ""
+    target = project.by_label[label]
+    if target.type == C.FIXED_CHOICE:
+        choices = target.choices.items
+        return next((c for c in (flag.label, flag.data_label) if c in choices), "")
+    return flag.label
+
+
 def _event_values(project: TimelapseProject, settings: dict, palette: dict | None, event: dict | None) -> dict:
     values: dict[str, str] = {}
     info = describe(project, event) if event else None
@@ -161,6 +173,10 @@ def _event_values(project: TimelapseProject, settings: dict, palette: dict | Non
             values[label] = _format_for(project, label, info and info["entrySeconds"])
         elif key == "exit":
             values[label] = _format_for(project, label, info and info["exitSeconds"])
+        elif key == "speciesName":
+            values[label] = _species_text(project, label, event["species"]) if event else ""
+        elif key == "individual":
+            values[label] = info["individual"] if info else ""
         elif key == "exitFile":
             values[label] = info["endFile"] if info and info["end_file_id"] and not info["end_inside"] else ""
         elif key == "duration":  # (T_end + exit) - (T_start + entry); see describe()
