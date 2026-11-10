@@ -26,6 +26,7 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
     ["Note", "MultiLine", "DecimalAny", "DecimalPositive", "IntegerAny", "IntegerPositive"].includes(c.type));
   const textTargets = project.controls.filter((c) => ["Note", "MultiLine", "AlphaNumeric"].includes(c.type));
   const flagTargets = project.controls.filter((c) => c.type === "Flag");
+  const speciesTargets = project.controls.filter((c) => ["Note", "MultiLine", "AlphaNumeric", "FixedChoice"].includes(c.type));
 
   const save = async () => {
     try {
@@ -58,8 +59,8 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
     }
   };
 
-  const column = (key: "entry" | "exit" | "exitFile" | "startInside" | "endInside" | "duration") => {
-    const targets = key === "exitFile" ? textTargets : key === "startInside" || key === "endInside" ? flagTargets : numberTargets;
+  const column = (key: "speciesName" | "individual" | "entry" | "exit" | "exitFile" | "startInside" | "endInside" | "duration") => {
+    const targets = key === "speciesName" ? speciesTargets : key === "exitFile" || key === "individual" ? textTargets : key === "startInside" || key === "endInside" ? flagTargets : numberTargets;
     return (
       <div className="field">
         <label htmlFor={`ev-${key}`}>{t(`settings.event.${key}`)}</label>
@@ -127,6 +128,7 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
       <div className="section-title">{t("settings.events")}</div>
       <p className="note" style={{ margin: 0 }}>{t("settings.eventsLead")}</p>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
+        {column("speciesName")}{column("individual")}<span />
         {column("startInside")}{column("entry")}{column("duration")}
         {column("exitFile")}{column("exit")}{column("endInside")}
       </div>

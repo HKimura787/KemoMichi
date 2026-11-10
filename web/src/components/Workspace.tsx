@@ -257,7 +257,8 @@ export function Workspace({ info, project, setProject, onLeave }: {
       else {
         const picked = await choose(t("event.chooseOpen"), openEvents.map((e) => ({
           value: String(e.id),
-          label: `${flagLabel(e.species) || "—"} · ${e.startFile}${e.start_inside ? "" : ` ${e.entrySeconds ?? ""}s`}`,
+          label: `${flagLabel(e.species) || "—"} #${e.individual} · ${e.startFile}`
+            + (e.start_inside ? ` · ${t("event.keyShiftS")}` : ` · ${e.entrySeconds ?? ""}s`),
         })));
         if (picked === null) return;
         event = openEvents.find((e) => String(e.id) === picked) ?? null;
@@ -302,12 +303,12 @@ export function Workspace({ info, project, setProject, onLeave }: {
     const last = Math.max(0, (videoInfo?.frameTimes?.length ?? 1) - 1);
     const all = [...detail.events, ...openEvents.filter((o) => !detail.events.some((e) => e.id === o.id))];
     return all.filter((e) => mine.has(e.start_file_id) || (e.end_file_id !== null && mine.has(e.end_file_id)) || e.open)
-      .map((e, n) => {
+      .map((e) => {
         const startsHere = mine.has(e.start_file_id);
         const endsHere = e.end_file_id !== null && mine.has(e.end_file_id);
         const start = startsHere ? (e.start_inside ? 0 : e.start_frame ?? 0) : 0;
         const end = e.open ? null : endsHere ? (e.end_inside ? last : e.end_frame ?? last) : last;
-        return { key: e.id, start, end, label: `${n + 1} ${flagLabel(e.species)}`,
+        return { key: e.id, start, end, label: `#${e.individual} ${flagLabel(e.species)}`,
                  carriedIn: !startsHere || e.start_inside, carriedOut: !e.open && !endsHere };
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -584,12 +585,13 @@ export function Workspace({ info, project, setProject, onLeave }: {
                          <EventPanel kind={detail.kind} fileId={detail.sameFileRows[0] ?? detail.id} events={detail.events}
                                      openEvents={openEvents} speciesLabel={flagLabel} palette={palette.items}
                                      configured={Object.entries(project.eventColumns ?? {}).some(([k, v]) =>
-                                       ["entry", "exit", "exitFile", "startInside", "endInside", "duration"].includes(k) && !!v)}
+                                       ["speciesName", "individual", "entry", "exit", "exitFile", "startInside", "endInside", "duration"].includes(k) && !!v)}
                                      readOnly={project.readOnly}
                                      onDelete={(id) => { if (window.confirm(t("event.confirmDelete"))) eventAction(() => api.deleteEvent(id)); }}
                                      onJump={jumpEvent} onEnd={(e, inside) => endEvent(inside, e)}
                                      onReopen={(e) => eventAction(() => api.changeEvent(e.id, { reopen: true }))}
-                                     onSpecies={(e, species) => eventAction(() => api.changeEvent(e.id, { species }))} />
+                                     onSpecies={(e, species) => eventAction(() => api.changeEvent(e.id, { species }))}
+                                     onIndividual={(e, individual) => eventAction(() => api.changeEvent(e.id, { individual }))} />
                        )} />
             <ColorPanel value={color} onChange={setColor} hasFolderDefault={folderColor !== null} readOnly={project.readOnly}
                         onSaveFolder={async () => {

@@ -82,6 +82,8 @@ def demo_controls() -> list[Control]:
         control(C.MULTI_CHOICE, "Behaviour", "Behaviour", "", ["Walking", "Feeding", "Resting", "Looking"]),
         control(C.NOTE, "Note", "Note"),
         # REST event fields: one row per event (see kemocore.events)
+        control(C.FIXED_CHOICE, "Species", "SpeciesName", "", DEMO_SPECIES),
+        control(C.NOTE, "Individual", "Individual"),
         control(C.FLAG, "Inside at start", "InsideAtStart", C.FALSE, width="20"),
         control(C.DECIMAL_POSITIVE, "Entry (s)", "EntrySec", "", width="60"),
         control(C.NOTE, "Exit file", "ExitFile"),
@@ -106,7 +108,7 @@ def create_demo_project(root: Path) -> Path:
     sidecar = Sidecar(ddb)
     sidecar.set("palette", {"items": [{"flag": name, "counter": f"{name}Count", "key": str(i + 1)}
                                       for i, name in enumerate(DEMO_SPECIES)], "single": False})
-    sidecar.set("eventColumns", {"entry": "EntrySec", "exit": "ExitSec", "exitFile": "ExitFile",
+    sidecar.set("eventColumns", {"speciesName": "SpeciesName", "individual": "Individual", "entry": "EntrySec", "exit": "ExitSec", "exitFile": "ExitFile",
                                  "startInside": "InsideAtStart", "endInside": "InsideAtEnd",
                                  "duration": "StayDuration", "writeSpecies": True})
     sidecar.close()

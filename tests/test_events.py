@@ -7,7 +7,7 @@ from kemocore import events
 from kemocore.sidecar import Sidecar
 from kemocore.timelapse.project import TimelapseProject
 
-COLUMNS = {"entry": "EntrySec", "exit": "ExitSec", "exitFile": "ExitFile", "startInside": "InsideAtStart",
+COLUMNS = {"speciesName": "SpeciesName", "individual": "Individual", "entry": "EntrySec", "exit": "ExitSec", "exitFile": "ExitFile", "startInside": "InsideAtStart",
            "endInside": "InsideAtEnd", "duration": "StayDuration"}
 PALETTE = {"items": [{"flag": f"Species{x}", "counter": f"Species{x}Count", "key": str(i + 1)}
                      for i, x in enumerate("ABCD")], "single": False}
@@ -135,3 +135,34 @@ def test_old_intervals_become_events(demo):
     migrated = sidecar.events()
     assert len(migrated) == 1 and migrated[0]["start_file_id"] == 14 and migrated[0]["end_frame"] == 33
     assert sidecar.get(events.SETTINGS_KEY)["entry"] == "EntrySec"
+
+
+@needs_ffmpeg
+def test_overlapping_events_in_one_video(demo):
+    """Male A stays frames 1-4 and female B frames 3-6 of the same video: two events, two rows."""
+    project, sidecar = setup(demo)
+    video = project.ids({"text": "VID_0001"})[0]
+    a = events.start_event(project, sidecar, video, 1, False, "SpeciesA")
+    b = events.start_event(project, sidecar, video, 3, False, "SpeciesA")
+    assert {e["id"] for e in sidecar.open_events()} == {a["id"], b["id"]}
+    events.end_event(project, sidecar, a["id"], video, 4, False)
+    events.end_event(project, sidecar, b["id"], video, 6, False)
+    rows = [project.file(r)["values"] for r in project.same_file_ids(video)]
+    # Individuals are numbered automatically across the project.
+    assert [(r["Individual"], r["EntrySec"], r["ExitSec"], r["StayDuration"]) for r in rows] == [
+        ("1", "0.033367", "0.133467", "0.1001"),
+        ("2", "0.1001", "0.2002", "0.1001"),
+    ]
+    assert all(r["SpeciesA"] == "true" and r["SpeciesName"] == "SpeciesA" and r["ExitFile"] == "VID_0001.MP4"
+               for r in rows)
+
+
+def test_individual_numbers_are_never_reused(demo):
+    project, sidecar = setup(demo)
+    first = events.start_event(project, sidecar, 1, None, False, "SpeciesA")
+    second = events.start_event(project, sidecar, 2, None, False, "SpeciesB")
+    events.delete_event(project, sidecar, second["id"])
+    third = events.start_event(project, sidecar, 3, None, False, "SpeciesB")
+    named = events.start_event(project, sidecar, 4, None, False, "SpeciesB", "male A")
+    assert (first["individual"], third["individual"], named["individual"]) == ("1", "3", "male A")
+    assert project.file(3)["values"]["SpeciesName"] == "SpeciesB"
