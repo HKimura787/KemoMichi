@@ -15,9 +15,3 @@ web/dist/
 *.tsbuildinfo
 build/
 dist/
-
-# 配布ファイルはビルドで配置し、GitHubではReleases / Actions成果物で共有する
-/download/**/*.dmg
-/download/**/*.exe
-/download/**/*.zip
-/download/**/SHA256SUMS.txt

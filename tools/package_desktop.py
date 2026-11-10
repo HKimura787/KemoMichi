@@ -20,30 +20,6 @@ from kemocore.runtime import tool_path
 ROOT = Path(__file__).resolve().parents[1]
 
 
-def prepare_downloads(installers: Path, system: str, architecture: str):
-    """Copy this build's installers into the user-facing download folder."""
-    if system == "Darwin" and architecture in ("arm64", "x86_64"):
-        folder = ROOT / "download/mac" / ("apple-silicon" if architecture == "arm64" else "intel")
-        names = [f"KemoMichi-macOS-{architecture}.dmg"]
-    elif system == "Windows" and architecture.lower() in ("amd64", "x86_64"):
-        folder = ROOT / "download/windows"
-        names = ["KemoMichi-Windows-x86_64-setup.exe", "KemoMichi-Windows-x86_64-portable.zip"]
-    else:
-        raise ValueError(f"Unsupported download target: {system} {architecture}")
-    # Check all inputs before copying; do not label an incomplete build as ready.
-    for name in names:
-        if not (installers / name).is_file():
-            raise FileNotFoundError(installers / name)
-    folder.mkdir(parents=True, exist_ok=True)
-    checksums = []
-    for name in names:
-        target = folder / name
-        shutil.copy2(installers / name, target)
-        checksums.append(f"{hashlib.sha256(target.read_bytes()).hexdigest()}  {name}\n")
-    (folder / "SHA256SUMS.txt").write_text("".join(checksums), encoding="utf-8")
-    print(f"Prepared downloads: {folder}")
-
-
 def prepare_resources(destination: Path):
     destination.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGBA", (1024, 1024))
@@ -148,8 +124,10 @@ def main():
         arch = platform.machine()
         staging = ROOT / "build/dmg"
         if staging.exists():
-            shutil.rmtree(staging)
-        staging.mkdir()
+            shutil.rmtree(staging, ignore_errors=True)
+            if staging.exists():
+                subprocess.run(["rm", "-rf", str(staging)])
+        staging.mkdir(parents=True, exist_ok=True)
         shutil.copytree(ROOT / "dist/KemoMichi.app", staging / "KemoMichi.app", symlinks=True)
         (staging / "Applications").symlink_to("/Applications")
         target = installers / f"KemoMichi-macOS-{arch}.dmg"
@@ -166,7 +144,6 @@ def main():
                 "files": {p.name: hashlib.sha256(p.read_bytes()).hexdigest()
                           for p in installers.iterdir() if p.suffix in (".dmg", ".exe", ".zip")}}
     (installers / "manifest.json").write_text(json.dumps(manifest, indent=2), encoding="utf-8")
-    prepare_downloads(installers, platform.system(), platform.machine())
     print(f"Built installers: {installers}")
 
 
