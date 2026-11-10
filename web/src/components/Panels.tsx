@@ -40,8 +40,7 @@ export function EventPanel({ kind, fileId, events, openEvents, speciesLabel, con
           {palette.map((p) => <option key={p.flag} value={p.flag}>{speciesLabel(p.flag)}</option>)}
         </select>
         {e.open ? <span className="chip" aria-pressed="true">{t("event.open")}</span>
-          : <span className="dur">{e.durationSeconds !== null ? t("rest.duration", { seconds: e.durationSeconds })
-            : e.elapsedSeconds !== null ? t("event.elapsed", { seconds: e.elapsedSeconds }) : ""}</span>}
+          : <span className="dur">{e.durationSeconds !== null ? t("rest.duration", { seconds: e.durationSeconds }) : ""}</span>}
       </div>
       <div className="note">{t("event.entry")}: {point(e, "start")}</div>
       <div className="note">{t("event.exit")}: {point(e, "end")}</div>

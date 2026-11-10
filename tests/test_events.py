@@ -42,9 +42,10 @@ def test_event_across_files_records_exit_file(demo):
     events.end_event(project, sidecar, event["id"], 3, None, False)
     values = project.file(1)["values"]
     assert values["ExitFile"] == "IMG_0003.JPG" and values["EntrySec"] == "0" and values["ExitSec"] == "0"
-    assert values["StayDuration"] == ""  # not exact across files
+    # Across files: (T_end + exit) - (T_start + entry). Images: entry = exit = 0, T differs by 2 x 37 min 2 s.
+    assert values["StayDuration"] == str(2 * 37 * 60 + 2)
     info = events.describe(project, sidecar.event(event["id"]))
-    assert info["elapsedSeconds"] == str(2 * 37 * 60 + 2) and not info["sameFile"]
+    assert info["durationSeconds"] == str(2 * 37 * 60 + 2) and not info["sameFile"]
     assert sidecar.open_events() == []
     # The end file's own row is not changed: the event belongs to the row where it starts.
     assert project.file(3)["values"]["ExitFile"] == ""

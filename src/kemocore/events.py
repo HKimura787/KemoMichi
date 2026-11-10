@@ -81,15 +81,17 @@ def describe(project: TimelapseProject, event: dict) -> dict:
     if end_row is not None and not event["end_inside"]:
         exit_ = seconds_in_file(project, event["end_file_id"], event["end_frame"])
     same_file = end_row is not None and event["end_file_id"] == event["start_file_id"]
+    # Stay = (T_end + exit) - (T_start + entry), T being each file's clock time (users' REST rule).
+    # Within one file the T terms cancel, leaving the exact frame-time difference.
     duration = None
-    if same_file and entry is not None and exit_ is not None:
-        duration = exit_ - entry
-    elapsed = None
-    start_time = _parse(start_row["values"].get(C.DATE_TIME)) if start_row else None
-    end_time = _parse(end_row["values"].get(C.DATE_TIME)) if end_row else None
-    if entry is not None and exit_ is not None and start_time and end_time:
-        # Across files the clock time of each file is whole seconds, so this is approximate.
-        elapsed = (Fraction(int((end_time - start_time).total_seconds())) + exit_ - entry)
+    if entry is not None and exit_ is not None:
+        if same_file:
+            duration = exit_ - entry
+        else:
+            start_time = _parse(start_row["values"].get(C.DATE_TIME)) if start_row else None
+            end_time = _parse(end_row["values"].get(C.DATE_TIME)) if end_row else None
+            if start_time and end_time:
+                duration = Fraction(int((end_time - start_time).total_seconds())) + exit_ - entry
 
     def file_name(row):
         return row["values"].get(C.FILE, "") if row else ""
@@ -107,7 +109,6 @@ def describe(project: TimelapseProject, event: dict) -> dict:
         "exitSeconds": None if exit_ is None else media.format_seconds(exit_),
         "sameFile": same_file,
         "durationSeconds": None if duration is None else media.format_seconds(duration),
-        "elapsedSeconds": None if elapsed is None else media.format_seconds(elapsed),
     }
 
 
@@ -162,7 +163,7 @@ def _event_values(project: TimelapseProject, settings: dict, palette: dict | Non
             values[label] = _format_for(project, label, info and info["exitSeconds"])
         elif key == "exitFile":
             values[label] = info["endFile"] if info and info["end_file_id"] and not info["end_inside"] else ""
-        elif key == "duration":
+        elif key == "duration":  # (T_end + exit) - (T_start + entry); see describe()
             values[label] = _format_for(project, label, info and info["durationSeconds"])
     if settings["writeSpecies"] and event and palette and event.get("species"):
         for item in palette.get("items", []):
@@ -278,7 +279,7 @@ def resync_all(project: TimelapseProject, sidecar: Sidecar) -> int:
 EXPORT_HEADER = [
     "EventId", "Species", "Individual", "StartFolder", "StartFile", "StartDateTime", "EntrySeconds",
     "AlreadyInsideAtStart", "EndFolder", "EndFile", "EndDateTime", "ExitSeconds", "StillInsideAtEnd",
-    "Open", "SameFile", "DurationSeconds", "ElapsedSecondsApprox", "Note",
+    "Open", "SameFile", "DurationSeconds", "Note",
 ]
 
 
@@ -296,8 +297,7 @@ def export_events_csv(project: TimelapseProject, sidecar: Sidecar, target: Path 
             d["id"], labels.get(d["species"], d["species"]), d["individual"], d["startFolder"], d["startFile"],
             d["startDateTime"], d["entrySeconds"] or "", str(d["start_inside"]).lower(), d["endFolder"],
             d["endFile"], d["endDateTime"], d["exitSeconds"] or "", str(d["end_inside"]).lower(),
-            str(d["open"]).lower(), str(d["sameFile"]).lower(), d["durationSeconds"] or "",
-            d["elapsedSeconds"] or "", d["note"],
+            str(d["open"]).lower(), str(d["sameFile"]).lower(), d["durationSeconds"] or "", d["note"],
         ])
     target.write_text(buffer.getvalue(), encoding="utf-8-sig", newline="")
     return target

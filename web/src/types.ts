@@ -104,7 +104,6 @@ export interface RestEvent {
   exitSeconds: string | null;
   sameFile: boolean;
   durationSeconds: string | null;
-  elapsedSeconds: string | null;
 }
 
 export interface FileDetail extends Row {
