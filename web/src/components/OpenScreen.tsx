@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import { api } from "../api";
 import { useI18n } from "../i18n";
-import type { Info, Project } from "../types";
+import type { Info, Project, TemplateDraft } from "../types";
 import { Dialog, FileBrowser, lastFolder, useToast } from "../ui";
+import { TemplateWizard } from "./TemplateWizard";
 
 export async function waitForJob(id: string, onProgress: (done: number, total: number) => void) {
   for (;;) {
@@ -51,21 +52,21 @@ export function OpenScreen({ info, onOpened, onCancel }: {
     }
   };
 
-  const create = async (template: string | null, demo: boolean) => {
+  const create = async (template: string | null, demo: boolean, draft?: TemplateDraft) => {
     if (operation.current) return;
     operation.current = true;
-    setMode("none");
     try {
       setCreating(t("open.creating", { done: 0, total: "…" }));
-      const job = await api.create(folder, template, demo);
+      const job = await api.create(folder, template, demo, draft);
       await waitForJob(job.id, (done, total) => setCreating(t("open.creating", { done, total: total || "…" })));
       onOpened(await api.project());
     } catch (e: any) {
+      if (draft) throw e;
       toast.push("error", e?.error ? t(e.error, e.params) : t("error.unexpected"));
     } finally {
       operation.current = false;
       setCreating(null);
-      setMode("none");
+      if (!draft) setMode("none");
     }
   };
 
@@ -117,8 +118,9 @@ export function OpenScreen({ info, onOpened, onCancel }: {
       {creating && <p role="status">{creating}</p>}
 
       {mode === "template" && (
-        <TemplatePicker info={info} folder={folder} initialTemplate={selected?.kind === "tdb" ? selected.path : null} onCancel={() => setMode("none")}
-                        onPick={(template) => create(template, false)} />
+        <TemplateWizard info={info} folder={folder} initialTemplate={selected?.kind === "tdb" ? selected.path : null}
+                        progress={creating} onCancel={() => setMode("none")}
+                        onCreate={(template, draft) => create(template, false, draft)} />
       )}
       {mode === "demo" && (
         <Dialog title={t("open.demo")} onClose={() => setMode("none")}
@@ -131,27 +133,5 @@ export function OpenScreen({ info, onOpened, onCancel }: {
         </Dialog>
       )}
     </main>
-  );
-}
-
-function TemplatePicker({ info, folder, initialTemplate, onCancel, onPick }: {
-  info: Info; folder: string; initialTemplate: string | null; onCancel: () => void; onPick: (path: string) => void;
-}) {
-  const { t } = useI18n();
-  const [template, setTemplate] = useState<string | null>(initialTemplate);
-  return (
-    <Dialog title={t("open.chooseTemplate")} onClose={onCancel} wide
-            actions={<>
-              <button className="btn" onClick={onCancel}>{t("open.cancel")}</button>
-              <button className="btn main" disabled={!template} onClick={() => template && onPick(template)}>
-                {t("open.createHere")}
-              </button>
-            </>}>
-      <p>{t("open.createLead")}</p>
-      <p className="path">{t("open.destination")}: {folder}</p>
-      {template && <p className="path">{t("open.outputName")}: {template.split(/[\\/]/).pop()?.replace(/\.tdb$/i, ".ddb")}</p>}
-      <FileBrowser start={folder} kinds={["tdb"]} places={info.startFolders} selected={template}
-                   onSelect={(item) => setTemplate(item.path)} />
-    </Dialog>
   );
 }

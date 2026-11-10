@@ -21,6 +21,24 @@ export interface Control {
   standard: boolean;
 }
 
+export interface TemplateDraft {
+  name: string;
+  revision: string;
+  controls: Control[];
+}
+
+export interface TemplatePreview {
+  path: string;
+  revision: string;
+  controls: Control[];
+  suggestedName: string;
+}
+
+export interface TemplateConfirmation extends TemplateDraft {
+  templatePath: string;
+  ddbPath: string;
+}
+
 export interface Row {
   id: number;
   values: Record<string, string>;
@@ -48,7 +66,7 @@ export interface ReviewPosition {
   fileId: number;
   frame: number;
   filter: Filter;
-  view: "viewer" | "grid";
+  view: "viewer" | "grid" | "table";
 }
 
 export interface Project {

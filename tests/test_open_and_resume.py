@@ -35,10 +35,17 @@ def test_review_position_survives_reopening_without_changing_ddb(demo):
             assert stale.status_code == 409
             invalid = client.put("/api/review-position", json={"expectedPath": str(demo), **position, "frame": -1})
             assert invalid.status_code == 422
+            position_table = {"fileId": 3, "frame": 0, "filter": {}, "view": "table"}
+            response = client.put("/api/review-position", json={"expectedPath": str(demo), **position_table})
+            assert response.status_code == 200 and response.json()["saved"]
+            client.post("/api/project/close")
+            opened = client.post("/api/project/open", json={"path": str(demo)}).json()
+            assert opened["settings"]["reviewPosition"] == position_table
+            assert client.get("/api/project").json()["settings"]["reviewPosition"] == position_table
             client.post("/api/project/open", json={"path": str(demo), "readOnly": True})
             response = client.put("/api/review-position", json={"expectedPath": str(demo), **position, "frame": 29})
             assert response.json() == {"saved": False}
-            assert client.get("/api/project").json()["settings"]["reviewPosition"] == position
+            assert client.get("/api/project").json()["settings"]["reviewPosition"] == position_table
     finally:
         app.state.workspace.close()
 

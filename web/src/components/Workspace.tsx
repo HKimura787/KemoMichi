@@ -6,6 +6,7 @@ import { useToast } from "../ui";
 import { DataPanel, isTrue, speciesChange } from "./DataPanel";
 import { RecognitionDialog, SettingsDialog, ShortcutsDialog } from "./Dialogs";
 import { Grid } from "./Grid";
+import { Spreadsheet } from "./Spreadsheet";
 import { ColorPanel, GuidePanel, RestPanel, type PendingStart } from "./Panels";
 import { NEUTRAL_COLOR, Timeline, Viewer, type ViewerHandle } from "./Viewer";
 
@@ -34,7 +35,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const [rowsVersion, setRowsVersion] = useState(0);
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const anchor = useRef<number | null>(null);
-  const [view, setView] = useState<"viewer" | "grid">(resume.current?.view ?? "viewer");
+  const [view, setView] = useState<"viewer" | "grid" | "table">(resume.current?.view ?? "viewer");
   const [detail, setDetail] = useState<FileDetail | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [videoInfoId, setVideoInfoId] = useState<number | null>(null);
@@ -415,7 +416,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
         case "g": case "G": setShowGuides((v) => !v); break;
         case "b": case "B": setShowBoxes((v) => !v); break;
         case "a": case "A": setCompare(true); break;
-        case "v": case "V": setView((v) => (v === "grid" ? "viewer" : "grid")); break;
+        case "v": case "V": setView((v) => (v === "viewer" ? "grid" : v === "grid" ? "table" : "viewer")); break;
         case "f": case "F": viewerRef.current?.fit(); break;
         case "d": case "D":
           if (currentRow) change({ DeleteFlag: isTrue(currentRow.values.DeleteFlag) ? "false" : "true" });
@@ -581,23 +582,48 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
           <div className="toolbar">
             <button className="icon-btn" aria-pressed={view === "viewer"} onClick={() => setView("viewer")}>{t("view.viewer")}</button>
             <button className="icon-btn" aria-pressed={view === "grid"} onClick={() => setView("grid")}>{t("view.grid")}</button>
+            <button className="icon-btn" aria-pressed={view === "table"} onClick={() => setView("table")}>{t("view.table")}</button>
             <span className="sep" />
             <button className="icon-btn" onClick={() => go(-1)} aria-label="previous">←</button>
             <span className="pos">{t("viewer.position", { index: total ? index + 1 : 0, total })}</span>
             <button className="icon-btn" onClick={() => go(1)} aria-label="next">→</button>
-            <span className="sep" />
-            <button className="icon-btn" aria-pressed={showGuides} onClick={() => setShowGuides((v) => !v)}>{t("viewer.guides")}</button>
-            {project.hasRecognitions && (
-              <button className="icon-btn" aria-pressed={showBoxes} onClick={() => setShowBoxes((v) => !v)}>{t("viewer.bboxes")}</button>
+            {view === "viewer" && (
+              <>
+                <span className="sep" />
+                <button className="icon-btn" aria-pressed={showGuides} onClick={() => setShowGuides((v) => !v)}>{t("viewer.guides")}</button>
+                {project.hasRecognitions && (
+                  <button className="icon-btn" aria-pressed={showBoxes} onClick={() => setShowBoxes((v) => !v)}>{t("viewer.bboxes")}</button>
+                )}
+                <button className="icon-btn" onClick={() => viewerRef.current?.fit()}>{t("viewer.fit")}</button>
+                <button className="icon-btn" onClick={handleCapture} title={`${t("viewer.capture")} (C)`}>📷 {t("viewer.capture")}</button>
+              </>
             )}
-            <button className="icon-btn" onClick={() => viewerRef.current?.fit()}>{t("viewer.fit")}</button>
-            <button className="icon-btn" onClick={handleCapture} title={`${t("viewer.capture")} (C)`}>📷 {t("viewer.capture")}</button>
             <span style={{ flex: 1 }} />
             {currentRow && <span className="pos" title={currentRow.values.RelativePath}>{currentRow.values.File} · {currentRow.values.DateTime}</span>}
           </div>
           {view === "grid" ? (
             <Grid mediaSession={mediaSession} ids={ids} rows={rowsRef.current} need={need} selection={selection} currentId={currentId}
                   onPick={pick} onOpen={(at) => { setIndex(at); setView("viewer"); }} speciesLabels={speciesLabels} />
+          ) : view === "table" ? (
+            <Spreadsheet
+              mediaSession={mediaSession}
+              ids={ids}
+              rows={rowsRef.current}
+              need={need}
+              currentId={currentId}
+              onPick={(id, at) => {
+                setIndex(at);
+                setSelection(new Set([id]));
+              }}
+              onOpen={(at) => {
+                setIndex(at);
+                setView("viewer");
+              }}
+              controls={controls}
+              locked={locked}
+              readOnly={project.readOnly}
+              onWrite={write}
+            />
           ) : (
             <>
               <Viewer key={detail?.id ?? "empty"} ref={viewerRef} mediaSession={mediaSession} detail={detail}

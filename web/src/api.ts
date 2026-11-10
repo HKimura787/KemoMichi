@@ -1,4 +1,4 @@
-import type { FileDetail, Filter, Info, Project, ReviewPosition, Row, VideoInfo } from "./types";
+import type { FileDetail, Filter, Info, Project, ReviewPosition, Row, TemplateConfirmation, TemplateDraft, TemplatePreview, VideoInfo } from "./types";
 
 export class ApiError extends Error {
   constructor(public key: string, public params: Record<string, unknown> = {}, public status = 0) {
@@ -41,8 +41,12 @@ export const api = {
   },
   open: (path: string, readOnly = false) => request<Project>("POST", "/api/project/open", { path, readOnly }),
   close: () => request("POST", "/api/project/close"),
-  create: (folder: string, template: string | null, demo = false) =>
-    request<{ id: string }>("POST", "/api/project/create", { folder, template, demo }),
+  template: (path: string, folder: string) =>
+    request<TemplatePreview>("GET", `/api/template?${new URLSearchParams({ path, folder })}`),
+  validateTemplate: (folder: string, template: string, draft: TemplateDraft) =>
+    request<TemplateConfirmation>("POST", "/api/template/validate", { folder, template, draft }),
+  create: (folder: string, template: string | null, demo = false, draft?: TemplateDraft) =>
+    request<{ id: string }>("POST", "/api/project/create", { folder, template, demo, draft }),
   job: (id: string) => request<{ status: string; done: number; total: number; error: any; result: any }>(
     "GET", `/api/jobs/${id}`),
   ids: (filter: Filter) => request<number[]>("GET", `/api/files/ids?filter=${q(filter)}`),

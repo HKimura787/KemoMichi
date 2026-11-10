@@ -19,9 +19,13 @@ from kemocore.timelapse.csv_export import export_csv
 from kemocore.timelapse.project import ProjectError
 from kemocore.timelapse.recognitions import import_recognitions
 from kemocore.timelapse.template import ValueError_, make_data_label
+from kemocore.timelapse.template_edit import (
+    project_name, read_template, suggest_name, validate_controls, write_template_copy,
+)
 
 from .media_response import cached_file_response
 from .security import BasicAuthMiddleware, ServerConfig
+from .template_models import TemplateDraft
 from .workspace import Jobs, Workspace
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -133,9 +137,43 @@ def create_app(config: ServerConfig) -> FastAPI:
         ws.close()
         return {"ok": True}
 
+    @app.get("/api/template")
+    def get_template(path: str, folder: str):
+        source = checked_path(path)
+        root = checked_path(folder)
+        if not root.is_dir():
+            raise HTTPException(404, detail={"error": "error.notFound", "params": {"path": folder}})
+        document = read_template(source)
+        return {"path": str(source), "revision": document.revision,
+                "controls": [control.to_dict() for control in document.controls],
+                "suggestedName": suggest_name(root, source.stem)}
+
+    def template_plan(folder: str, template: str, draft: TemplateDraft):
+        root, source = checked_path(folder), checked_path(template)
+        if not root.is_dir():
+            raise HTTPException(404, detail={"error": "error.notFound", "params": {"path": folder}})
+        document = read_template(source)
+        if document.revision != draft.revision:
+            raise HTTPException(409, detail={"error": "error.templateChanged"})
+        controls = validate_controls([control.model_dump() for control in draft.controls], document)
+        name = project_name(draft.name)
+        local_template, ddb = root / f"{name}.tdb", root / f"{name}.ddb"
+        if ddb.exists():
+            raise HTTPException(409, detail={"error": "error.ddbExists", "params": {"path": str(ddb)}})
+        if local_template.exists():
+            raise HTTPException(409, detail={"error": "error.templateExists", "params": {"path": str(local_template)}})
+        return source, local_template, ddb, controls
+
+    @app.post("/api/template/validate")
+    def validate_template(folder: str = Body(...), template: str = Body(...), draft: TemplateDraft = Body(...)):
+        _source, local_template, ddb, controls = template_plan(folder, template, draft)
+        return {"name": ddb.stem, "revision": draft.revision,
+                "controls": [control.to_dict() for control in controls],
+                "templatePath": str(local_template), "ddbPath": str(ddb)}
+
     @app.post("/api/project/create")
     def create_project(folder: str = Body(..., embed=True), template: str | None = Body(None, embed=True),
-                       demo: bool = Body(False, embed=True)):
+                       demo: bool = Body(False, embed=True), draft: TemplateDraft | None = Body(None)):
         root = checked_path(folder)
         if demo:
             def work(progress):
@@ -145,6 +183,27 @@ def create_app(config: ServerConfig) -> FastAPI:
             return jobs.start("create", work).to_dict()
         if not template:
             raise HTTPException(400, detail={"error": "error.templateRequired"})
+        if draft is not None:
+            source, local_template, ddb, controls = template_plan(folder, template, draft)
+
+            def reviewed_work(progress):
+                # Serialize project creations and the final workspace switch in this server.
+                with ws.lock:
+                    wrote_template = wrote_ddb = False
+                    try:
+                        write_template_copy(source, local_template, controls, draft.revision)
+                        wrote_template = True
+                        count = create_data_file(ddb, local_template, progress)
+                        wrote_ddb = True
+                        ws.open(ddb)
+                        return {"path": str(ddb), "files": count}
+                    except Exception:
+                        if wrote_ddb:
+                            ddb.unlink(missing_ok=True)
+                        if wrote_template:
+                            local_template.unlink(missing_ok=True)
+                        raise
+            return jobs.start("create", reviewed_work).to_dict()
         template_path = checked_path(template)
         ddb = root / template_path.with_suffix(".ddb").name
         if ddb.exists():
@@ -309,7 +368,7 @@ def create_app(config: ServerConfig) -> FastAPI:
             raise HTTPException(409, detail={"error": "error.projectChanged"})
         if p.file(fileId) is None:
             raise HTTPException(404, detail={"error": "error.fileNotFound"})
-        if view not in ("viewer", "grid"):
+        if view not in ("viewer", "grid", "table"):
             raise HTTPException(422, detail={"error": "error.badSetting"})
         if p.read_only:
             return {"saved": False}
