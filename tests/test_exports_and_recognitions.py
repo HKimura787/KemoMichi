@@ -1,10 +1,9 @@
 import json
 import sqlite3
-from fractions import Fraction
 
 from conftest import needs_ffmpeg
 
-from kemocore import media, rest
+from kemocore import media
 from kemocore.sidecar import Sidecar
 from kemocore.timelapse.csv_export import export_csv
 from kemocore.timelapse.project import TimelapseProject
@@ -81,66 +80,6 @@ def test_recognitions_stored_like_timelapse(demo, tmp_path):
     assert conn.execute("SELECT COUNT(*) FROM Detections WHERE Id = 1").fetchone()[0] == 1
 
 
-@needs_ffmpeg
-def test_video_interval_is_exact(demo):
-    project = TimelapseProject(demo)
-    video_id = project.ids({"text": "VID_0001"})[0]
-    interval = rest.video_interval(project, video_id, 0, 30)
-    # 30 frames at 30000/1001 fps is exactly 1.001 s.
-    assert interval["duration_seconds"] == "1.001"
-    info = media.video_info(project.media_path(project.file(video_id)))
-    assert media.frame_seconds(info, 30) == Fraction(1001, 1000)
-
-
-@needs_ffmpeg
-def test_interval_columns_are_written(demo):
-    project = TimelapseProject(demo)
-    sidecar = Sidecar(demo)
-    sidecar.set(rest.SETTINGS_KEY, {"start": "StayStart", "end": "StayEnd", "duration": "StayDuration", "multi": "sum"})
-    video_id = project.ids({"text": "VID_0001"})[0]
-    sidecar.save_interval(rest.video_interval(project, video_id, 3, 33))
-    sidecar.save_interval(rest.video_interval(project, video_id, 60, 75))
-    values = rest.write_columns(project, sidecar, video_id)
-    assert values["StayDuration"] == "1.5015"  # (30 + 15) frames * 1001/30000
-    assert values["StayStart"] == "0.1001"
-    assert project.file(video_id)["values"]["StayEnd"] == values["StayEnd"]
-    assert rest.locked_columns(sidecar) == {"StayStart", "StayEnd", "StayDuration"}
-
-
-@needs_ffmpeg
-def test_interval_stored_in_sidecar_without_tdb_columns(demo):
-    project = TimelapseProject(demo)
-    sidecar = Sidecar(demo)
-    video_id = project.ids({"text": "VID_0001"})[0]
-    # Do NOT set restColumns in sidecar (meaning no tdb column mapping)
-    sidecar.save_interval(rest.video_interval(project, video_id, 3, 33))
-    sidecar.save_interval(rest.video_interval(project, video_id, 60, 75))
-    values = rest.write_columns(project, sidecar, video_id)
-    # tdb values is empty because no mapped columns
-    assert values == {}
-    # but sidecar has file_rest stored!
-    file_rest = sidecar.file_rest(video_id)
-    assert file_rest is not None
-    assert file_rest["duration_seconds"] == "1.5015"
-    assert file_rest["interval_count"] == 2
-
-    # CSV export should include StayDuration_sec column
-    csv_path = demo.parent / "test_export.csv"
-    export_csv(project, csv_path, sidecar=sidecar)
-    text = csv_path.read_text(encoding="utf-8-sig")
-    assert "StayDuration_sec" in text
-    assert "1.5015" in text
-    intervals_csv = demo.parent / "test_export_intervals.csv"
-    assert intervals_csv.exists()
-
-
-
-def test_sequence_interval_uses_image_times(demo):
-    project = TimelapseProject(demo)
-    interval = rest.sequence_interval(project, 2, 1)
-    assert interval["start_file_id"] == 1 and interval["duration_seconds"] == str(37 * 60 + 1)
-
-
 def test_sidecar_folder_settings_inherit(demo):
     sidecar = Sidecar(demo)
     sidecar.set_folder("CamA", "guides", [{"shape": "triangle"}])
@@ -150,6 +89,7 @@ def test_sidecar_folder_settings_inherit(demo):
 
 
 def test_read_only_sidecar_creates_nothing(demo):
+    demo.with_name(demo.name + ".kemomichi").unlink()
     sidecar = Sidecar(demo, read_only=True)
     assert sidecar.get("x") is None
     assert not sidecar.path.exists()

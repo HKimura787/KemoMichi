@@ -78,7 +78,7 @@ def export_csv(project: TimelapseProject, target: Path | None = None, include_ro
     target.write_text("\r\n".join(lines) + "\r\n", encoding="utf-8-sig", newline="")
 
     # Also export Intervals.csv if sidecar has intervals
-    if sidecar is not None:
+    if sidecar is not None and hasattr(sidecar, "intervals"):
         all_intervals = sidecar.intervals()
         if all_intervals:
             int_csv = target.with_name(f"{target.stem}_intervals.csv")

@@ -11,7 +11,7 @@ from fastapi import Body, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
-from kemocore import __version__, media, rest
+from kemocore import __version__, events, media
 from kemocore.demo import create_demo_project
 from kemocore.timelapse import constants as C
 from kemocore.timelapse.create import create_data_file
@@ -111,7 +111,9 @@ def create_app(config: ServerConfig) -> FastAPI:
         p = project()
         payload = p.info()
         payload["settings"] = ws.sidecar.all_settings()
-        payload["lockedColumns"] = sorted(rest.locked_columns(ws.sidecar))
+        payload["lockedColumns"] = sorted(events.locked_columns(ws.sidecar))
+        payload["eventColumns"] = events.column_settings(ws.sidecar)
+        payload["duplicates"] = {str(k): v for k, v in ws.sidecar.all_duplicates().items()}
         payload["categories"] = p.detection_categories()
         payload["folders"] = p.folders()
         template = p.find_template()
@@ -242,15 +244,22 @@ def create_app(config: ServerConfig) -> FastAPI:
     def folders():
         return project().folders()
 
+    def list_filter(text: str | None) -> dict:
+        """The UI's filter, without the rows KemoMichi duplicated for events: one stop per file."""
+        flt = parse_filter(text)
+        if not flt.get("ids"):
+            flt["excludeIds"] = list(ws.sidecar.all_duplicates())
+        return flt
+
     @app.get("/api/files")
     def files(filter: str | None = None, offset: int = 0, limit: int = 200):
-        flt = parse_filter(filter)
+        flt = list_filter(filter)
         p = project()
         return {"total": p.count(flt), "offset": offset, "rows": p.files(flt, offset, min(limit, 2000))}
 
     @app.get("/api/files/ids")
     def file_ids(filter: str | None = None):
-        return project().ids(parse_filter(filter))
+        return project().ids(list_filter(filter))
 
     @app.get("/api/files/{file_id}")
     def file_detail(file_id: int):
@@ -258,8 +267,11 @@ def create_app(config: ServerConfig) -> FastAPI:
         row = file_or_404(file_id)
         row["detections"] = p.detections(file_id)
         row["markers"] = p.markers(file_id)
-        row["intervals"] = ws.sidecar.intervals(file_id)
         row["fileRest"] = ws.sidecar.file_rest(file_id)
+        same = p.same_file_ids(file_id)
+        row["events"] = [events.describe(p, e) for e in ws.sidecar.events_touching(same[:1])]
+        row["sameFileRows"] = same
+        row["duplicateOf"] = ws.sidecar.all_duplicates().get(file_id)
         row["kind"] = "video" if media.is_video(p.media_path(row)) else "image"
         row["exists"] = p.media_path(row).exists()
         rec_info = p.file_records_info(file_id)
@@ -281,7 +293,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.patch("/api/files")
     def update_files(ids: list[int] = Body(...), values: dict = Body(...)):
         p = project()
-        locked = rest.locked_columns(ws.sidecar) & set(values)
+        locked = events.locked_columns(ws.sidecar) & set(values)
         if locked:
             raise HTTPException(400, detail={"error": "error.lockedField", "params": {"field": sorted(locked)[0]}})
         batch = p.update(ids, values)
@@ -378,7 +390,9 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.put("/api/settings/{key}")
     def put_setting(key: str, value=Body(..., embed=True)):
         ws.sidecar.set(key, value)
-        return {"settings": ws.sidecar.all_settings(), "lockedColumns": sorted(rest.locked_columns(ws.sidecar))}
+        if key in (events.SETTINGS_KEY, "palette") and not project().read_only:
+            events.resync_all(project(), ws.sidecar)
+        return {"settings": ws.sidecar.all_settings(), "lockedColumns": sorted(events.locked_columns(ws.sidecar))}
 
     @app.get("/api/folder-settings")
     def get_folder_settings(folder: str = ""):
@@ -396,7 +410,9 @@ def create_app(config: ServerConfig) -> FastAPI:
         p = project()
         counters = [c for c in p.controls if c.type == C.COUNTER]
         items = []
-        for i, flag in enumerate(c for c in p.controls if c.type == C.FLAG and c.visible):
+        locked = events.locked_columns(ws.sidecar)
+        flags = [c for c in p.controls if c.type == C.FLAG and c.visible and c.data_label not in locked]
+        for i, flag in enumerate(flags):
             match = None
             names = {flag.data_label.lower() + s for s in ("count", "_count", "num", "number", "cnt", "n")}
             for counter in counters:
@@ -471,43 +487,63 @@ def create_app(config: ServerConfig) -> FastAPI:
         target.write_bytes(image_bytes)
         return {"path": str(target), "filename": target.name, "relative": f"captures/{target.name}"}
 
-    # ---- S/E intervals -------------------------------------------------------------------
+    # ---- REST events ---------------------------------------------------------------------
 
-    def save_interval(data: dict, interval_id: int | None = None):
+    def event_result(event: dict | None, file_ids: list[int], warning: str | None = None):
         p = project()
-        if data.get("kind") == "sequence":
-            computed = rest.sequence_interval(p, int(data["startFileId"]), int(data["endFileId"]))
-        else:
-            computed = rest.video_interval(p, int(data["fileId"]), int(data["startFrame"]), int(data["endFrame"]))
-        computed.update({k: data.get(k, "") for k in ("individual", "species", "note")})
-        if interval_id:
-            old = ws.sidecar.interval(interval_id)
-            computed["id"] = interval_id
-        saved = ws.sidecar.save_interval(computed)
-        values = rest.write_columns(p, ws.sidecar, saved["file_id"])
-        if interval_id and old and old["file_id"] != saved["file_id"]:
-            rest.write_columns(p, ws.sidecar, old["file_id"])
-        return {"interval": saved, "values": values, "row": p.file(saved["file_id"]),
-                "intervals": ws.sidecar.intervals(saved["file_id"])}
+        changed = set()
+        for fid in file_ids:
+            if p.file(fid) is not None:
+                changed.update(p.same_file_ids(fid))
+        return {
+            "event": events.describe(p, event) if event and ws.sidecar.event(event["id"]) else event,
+            "open": [events.describe(p, e) for e in ws.sidecar.open_events()],
+            "rows": [p.file(i) for i in sorted(changed) if p.file(i) is not None],
+            "duplicates": {str(k): v for k, v in ws.sidecar.all_duplicates().items()},
+            "warning": warning,
+        }
 
-    @app.post("/api/intervals")
-    def create_interval(data: dict = Body(...)):
-        return save_interval(data)
+    @app.get("/api/events")
+    def list_events(open: bool = False):
+        p = project()
+        found = ws.sidecar.open_events() if open else ws.sidecar.events()
+        return [events.describe(p, e) for e in found]
 
-    @app.put("/api/intervals/{interval_id}")
-    def update_interval(interval_id: int, data: dict = Body(...)):
-        if ws.sidecar.interval(interval_id) is None:
+    @app.post("/api/events")
+    def start_event(fileId: int = Body(...), frame: int | None = Body(None), inside: bool = Body(False),
+                    species: str = Body(""), individual: str = Body("")):
+        event = events.start_event(project(), ws.sidecar, fileId, frame, inside, species, individual)
+        return event_result(event, [event["start_file_id"]])
+
+    @app.post("/api/events/{event_id}/end")
+    def end_event(event_id: int, fileId: int = Body(...), frame: int | None = Body(None),
+                  inside: bool = Body(False)):
+        existing = ws.sidecar.event(event_id)
+        if existing is None:
             raise HTTPException(404, detail={"error": "error.notFound"})
-        return save_interval(data, interval_id)
+        settings = events.column_settings(ws.sidecar)
+        warning = events.continuity_warning(project(), existing["start_file_id"], fileId, settings["continuityGap"])
+        event = events.end_event(project(), ws.sidecar, event_id, fileId, frame, inside)
+        return event_result(event, [event["start_file_id"]], warning)
 
-    @app.delete("/api/intervals/{interval_id}")
-    def delete_interval(interval_id: int):
-        removed = ws.sidecar.delete_interval(interval_id)
+    @app.put("/api/events/{event_id}")
+    def change_event(event_id: int, changes: dict = Body(...)):
+        if ws.sidecar.event(event_id) is None:
+            raise HTTPException(404, detail={"error": "error.notFound"})
+        before = ws.sidecar.event(event_id)
+        event = events.update_event(project(), ws.sidecar, event_id, changes)
+        return event_result(event, [before["start_file_id"], event["start_file_id"]])
+
+    @app.delete("/api/events/{event_id}")
+    def remove_event(event_id: int):
+        removed = events.delete_event(project(), ws.sidecar, event_id)
         if removed is None:
             raise HTTPException(404, detail={"error": "error.notFound"})
-        values = rest.write_columns(project(), ws.sidecar, removed["file_id"])
-        return {"values": values, "row": project().file(removed["file_id"]),
-                "intervals": ws.sidecar.intervals(removed["file_id"])}
+        return event_result(None, [removed["start_file_id"]])
+
+    @app.post("/api/export/events")
+    def export_events():
+        return {"path": str(events.export_events_csv(project(), ws.sidecar))}
 
     # ---- web UI --------------------------------------------------------------------------
 

@@ -96,17 +96,23 @@ def test_video_range_and_info(client):
     assert part.status_code == 206 and len(part.content) == 100
 
 
-@needs_ffmpeg
-def test_intervals_lock_their_columns(client):
-    client.put("/api/settings/restColumns", json={"value": {
-        "start": "StayStart", "end": "StayEnd", "duration": "StayDuration", "multi": "first"}})
-    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0001"})}).json()[0]
-    made = client.post("/api/intervals", json={"kind": "video", "fileId": vid, "startFrame": 0, "endFrame": 30}).json()
-    assert made["values"]["StayDuration"] == "1.001"
-    locked = client.patch("/api/files", json={"ids": [vid], "values": {"StayDuration": "5"}})
+def test_events_lock_their_columns_and_duplicate_rows(client):
+    client.put("/api/settings/eventColumns", json={"value": {
+        "entry": "EntrySec", "exit": "ExitSec", "exitFile": "ExitFile", "startInside": "InsideAtStart",
+        "endInside": "InsideAtEnd", "duration": "StayDuration"}})
+    first = client.post("/api/events", json={"fileId": 1, "inside": True, "species": "SpeciesA"}).json()
+    assert [e["id"] for e in first["open"]] == [first["event"]["id"]]
+    ended = client.post(f"/api/events/{first['event']['id']}/end", json={"fileId": 2, "frame": None}).json()
+    assert ended["event"]["endFile"] == "IMG_0002.JPG" and ended["open"] == []
+    row = client.get("/api/files/1").json()
+    assert row["values"]["ExitFile"] == "IMG_0002.JPG" and row["values"]["InsideAtStart"] == "true"
+    locked = client.patch("/api/files", json={"ids": [1], "values": {"ExitFile": "x"}})
     assert locked.status_code == 400 and locked.json()["detail"]["error"] == "error.lockedField"
-    gone = client.delete(f"/api/intervals/{made['interval']['id']}").json()
-    assert gone["values"]["StayDuration"] == ""
+    second = client.post("/api/events", json={"fileId": 1, "frame": None, "species": "SpeciesB"}).json()
+    assert len(row["sameFileRows"]) == 1 and len(client.get("/api/files/1").json()["sameFileRows"]) == 2
+    client.delete(f"/api/events/{second['event']['id']}")
+    assert len(client.get("/api/files/1").json()["sameFileRows"]) == 1
+    assert client.post("/api/export/events").json()["path"].endswith("KemoMichiEvents.csv")
 
 
 def test_species_counters_and_palette(client):

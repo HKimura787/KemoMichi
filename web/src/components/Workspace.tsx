@@ -1,14 +1,15 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { api, ApiError } from "../api";
+import { api, ApiError, type EventResult } from "../api";
 import { useI18n } from "../i18n";
-import type { ColorAdjust, Detection, FileDetail, Filter, Guide, Info, Interval, Palette, Project, ReviewPosition, Row, ShapeKind, VideoInfo } from "../types";
+import type { ColorAdjust, Detection, FileDetail, Filter, Guide, Info, Palette, Project, ReviewPosition, RestEvent, Row, ShapeKind, VideoInfo } from "../types";
 import { useToast } from "../ui";
 import { DataPanel, isTrue, speciesChange } from "./DataPanel";
 import { RecognitionDialog, SettingsDialog, ShortcutsDialog } from "./Dialogs";
 import { Grid } from "./Grid";
 import { Spreadsheet } from "./Spreadsheet";
-import { ColorPanel, GuidePanel, RestPanel, type PendingStart } from "./Panels";
-import { NEUTRAL_COLOR, Timeline, Viewer, type ViewerHandle } from "./Viewer";
+import { ColorPanel, EventPanel, GuidePanel } from "./Panels";
+import { ChoiceDialog } from "./Dialogs";
+import { NEUTRAL_COLOR, Timeline, Viewer, type Segment, type ViewerHandle } from "./Viewer";
 
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable);
@@ -40,7 +41,10 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [videoInfoId, setVideoInfoId] = useState<number | null>(null);
   const frameRef = useRef(0);
-  const [pending, setPending] = useState<PendingStart | null>(null);
+  const [openEvents, setOpenEvents] = useState<RestEvent[]>([]);
+  const [duplicates, setDuplicates] = useState<Record<string, number>>(project.duplicates ?? {});
+  const [chooser, setChooser] = useState<null | { title: string; options: { value: string; label: string }[];
+                                                   resolve: (v: string | null) => void }>(null);
   const [saving, setSaving] = useState(0);
   const [showGuides, setShowGuides] = useState(true);
   const [showBoxes, setShowBoxes] = useState(true);
@@ -94,6 +98,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   }, [active]);
 
   const controls = project.controls;
+  const flagLabel = (label: string) => controls.find((c) => c.dataLabel === label)?.label ?? label;
   const locked = useMemo(() => new Set(project.lockedColumns), [project.lockedColumns]);
   const currentId = ids[index] ?? null;
   const currentRow = currentId !== null ? rowsRef.current.get(currentId) ?? null : null;
@@ -139,6 +144,10 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
       savePosition(true);
     };
   }, [savePosition]);
+
+  useEffect(() => {
+    api.openEvents().then(setOpenEvents).catch(() => {});
+  }, [project.path]);
 
   useEffect(() => {
     if (project.settings.palette) setPalette(project.settings.palette);
@@ -233,7 +242,9 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   };
 
   // ---- writing --------------------------------------------------------------------------
-  const targets = (): number[] => (view === "grid" && selection.size > 1 ? [...selection] : currentId !== null ? [currentId] : []);
+  // The record on screen: the file's own row, or one of its event rows picked with the record chip.
+  const recordId = detail?.id ?? currentId;
+  const targets = (): number[] => (view === "grid" && selection.size > 1 ? [...selection] : recordId !== null ? [recordId] : []);
 
   const write = useCallback(async (fileIds: number[], values: Record<string, string>) => {
     if (!fileIds.length) return;
@@ -243,14 +254,14 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
       storeRows(result.rows);
       setCanUndo(result.canUndo);
       setCanRedo(result.canRedo);
-      if (currentId !== null && fileIds.includes(currentId)) {
-        const row = result.rows.find((r) => r.id === currentId);
+      if (recordId !== null && fileIds.includes(recordId)) {
+        const row = result.rows.find((r) => r.id === recordId);
         if (row) setDetail((d) => (d && d.id === row.id ? { ...d, values: row.values } : d));
       }
     } finally {
       setSaving((n) => n - 1);
     }
-  }, [currentId, storeRows]);
+  }, [recordId, storeRows]);
 
   const change = async (values: Record<string, string>, confirmText?: string) => {
     if (confirmText && !window.confirm(confirmText)) return;
@@ -268,7 +279,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
       storeRows(result.rows);
       setCanUndo(result.canUndo);
       setCanRedo(result.canRedo);
-      if (currentId !== null && result.fileIds.includes(currentId)) loadDetail(currentId);
+      if (recordId !== null && result.fileIds.includes(recordId)) loadDetail(recordId);
     } catch (e) {
       toast.error(e);
     }
@@ -287,7 +298,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
       if (item.counter) values[item.counter] = prev.values[item.counter] ?? "0";
     }
     try {
-      await write([currentId], values);
+      await write([recordId ?? currentId], values);
     } catch (e) {
       toast.error(e);
     }
@@ -311,55 +322,108 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     }
   };
 
-  // ---- S/E -------------------------------------------------------------------------------
-  const markStart = () => {
+  // ---- REST events (entry to exit, possibly across files) --------------------------------
+  const frameNow = () => (detail?.kind === "video" ? viewerRef.current?.currentFrame() ?? 0 : null);
+
+  const applyEventResult = useCallback(async (result: EventResult) => {
+    storeRows(result.rows);
+    setOpenEvents(result.open);
+    setDuplicates(result.duplicates);
+    if (result.warning) toast.push("warning", t(result.warning));
+    // Rows may have been added or removed (one row per event), so refresh the list and this file.
+    await reloadIds(currentId);
+    if (currentId !== null) loadDetail(currentId);
+  }, [storeRows, toast, t, reloadIds, currentId, loadDetail]);
+
+  const choose = (title: string, options: { value: string; label: string }[]) =>
+    new Promise<string | null>((resolve) => setChooser({ title, options, resolve }));
+
+  const startEvent = async (inside: boolean) => {
     if (!detail || project.readOnly) return;
-    if (detail.kind === "video") {
-      const frame = viewerRef.current?.currentFrame() ?? 0;
-      setPending({ kind: "video", fileId: detail.id, frame, label: `#${frame}` });
-    } else {
-      setPending({ kind: "sequence", fileId: detail.id, label: detail.values.File });
+    const row = rowsRef.current.get(detail.id);
+    const on = palette.items.filter((i) => row && isTrue(row.values[i.flag]));
+    // Skip the question only for a file's first event with exactly one species on; afterwards the row's
+    // species may just be the previous event's, so always ask.
+    let species = on.length === 1 && detail.events.length === 0 ? on[0].flag : null;
+    if (species === null && palette.items.length) {
+      species = await choose(t("event.chooseSpecies"), palette.items.map((i) => ({ value: i.flag, label: flagLabel(i.flag) })));
+      if (species === null) return;
+    }
+    try {
+      await applyEventResult(await api.startEvent({ fileId: detail.id, frame: inside ? null : frameNow(), inside,
+                                                    species: species ?? "" }));
+    } catch (e) {
+      toast.error(e);
     }
   };
 
-  const markEnd = async () => {
-    if (!detail || !pending || project.readOnly) return;
-    try {
-      let result;
-      if (pending.kind === "video") {
-        if (pending.fileId !== detail.id) return;
-        result = await api.createInterval({ kind: "video", fileId: detail.id, startFrame: pending.frame,
-                                            endFrame: viewerRef.current?.currentFrame() ?? 0 });
-      } else {
-        result = await api.createInterval({ kind: "sequence", startFileId: pending.fileId, endFileId: detail.id });
+  const endEvent = async (inside: boolean, target?: RestEvent) => {
+    if (!detail || project.readOnly) return;
+    let event = target ?? null;
+    if (!event) {
+      if (openEvents.length === 0) {
+        toast.push("info", t("event.noneOpen"));
+        return;
       }
-      setPending(null);
-      storeRows([result.row]);
-      if (result.row.id === detail.id) setDetail({ ...detail, values: result.row.values, intervals: result.intervals });
-      else loadDetail(detail.id);
-      setCanUndo(true);
-    } catch (e) {
-      toast.error(e);
+      if (openEvents.length === 1) event = openEvents[0];
+      else {
+        const picked = await choose(t("event.chooseOpen"), openEvents.map((e) => ({
+          value: String(e.id),
+          label: `${flagLabel(e.species) || "—"} · ${e.startFile}${e.start_inside ? "" : ` ${e.entrySeconds ?? ""}s`}`,
+        })));
+        if (picked === null) return;
+        event = openEvents.find((e) => String(e.id) === picked) ?? null;
+      }
     }
-  };
-
-  const deleteInterval = async (id: number) => {
+    if (!event) return;
     try {
-      const result = await api.deleteInterval(id);
-      storeRows([result.row]);
-      if (detail) loadDetail(detail.id);
+      await applyEventResult(await api.endEvent(event.id, { fileId: detail.id, frame: inside ? null : frameNow(), inside }));
     } catch (e) {
       toast.error(e);
     }
   };
 
-  const jumpInterval = (i: Interval) => {
-    if (i.kind === "video") viewerRef.current?.seekFrame(i.start_frame ?? 0);
-    else if (i.start_file_id) {
-      const at = ids.indexOf(i.start_file_id);
-      if (at >= 0) setIndex(at);
+  const eventAction = async (run: () => Promise<EventResult>) => {
+    try {
+      await applyEventResult(await run());
+    } catch (e) {
+      toast.error(e);
     }
   };
+
+  const jumpEvent = (e: RestEvent, where: "start" | "end") => {
+    const fileId = where === "start" ? e.start_file_id : e.end_file_id;
+    const frame = where === "start" ? e.start_frame : e.end_frame;
+    if (fileId === null) return;
+    const seek = () => frame !== null && setTimeout(() => viewerRef.current?.seekFrame(frame), 600);
+    if (detail && (detail.id === fileId || detail.sameFileRows.includes(fileId))) {
+      if (frame !== null) viewerRef.current?.seekFrame(frame);
+      return;
+    }
+    const at = ids.indexOf(fileId);
+    if (at >= 0) {
+      setIndex(at);
+      setView("viewer");
+      seek();
+    }
+  };
+
+  const segments: Segment[] = useMemo(() => {
+    if (!detail || detail.kind !== "video") return [];
+    const mine = new Set(detail.sameFileRows);
+    const last = Math.max(0, (videoInfo?.frameTimes?.length ?? 1) - 1);
+    const all = [...detail.events, ...openEvents.filter((o) => !detail.events.some((e) => e.id === o.id))];
+    return all.filter((e) => mine.has(e.start_file_id) || (e.end_file_id !== null && mine.has(e.end_file_id)) || e.open)
+      .map((e, n) => {
+        const startsHere = mine.has(e.start_file_id);
+        const endsHere = e.end_file_id !== null && mine.has(e.end_file_id);
+        const start = startsHere ? (e.start_inside ? 0 : e.start_frame ?? 0) : 0;
+        const end = e.open ? null : endsHere ? (e.end_inside ? last : e.end_frame ?? last) : last;
+        return { key: e.id, start, end, label: `${n + 1} ${flagLabel(e.species)}`,
+                 carriedIn: !startsHere || e.start_inside, carriedOut: !e.open && !endsHere };
+      });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [detail, openEvents, videoInfo]);
 
   // ---- navigation and keys ----------------------------------------------------------------
   const go = (delta: number) => setIndex((i) => Math.max(0, Math.min(ids.length - 1, i + delta)));
@@ -377,7 +441,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   useEffect(() => {
     if (!active) return;
     const onKey = (e: KeyboardEvent) => {
-      if (dialog || isTyping(e.target)) return;
+      if (dialog || chooser || isTyping(e.target)) return;
       const mod = e.ctrlKey || e.metaKey;
       if (mod && e.key.toLowerCase() === "z") {
         e.preventDefault();
@@ -411,8 +475,8 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
           setPlaybackRate(next);
           break;
         }
-        case "s": case "S": markStart(); break;
-        case "e": case "E": markEnd(); break;
+        case "s": case "S": startEvent(e.shiftKey); break;
+        case "e": case "E": endEvent(e.shiftKey); break;
         case "g": case "G": setShowGuides((v) => !v); break;
         case "b": case "B": setShowBoxes((v) => !v); break;
         case "a": case "A": setCompare(true); break;
@@ -422,7 +486,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
           if (currentRow) change({ DeleteFlag: isTrue(currentRow.values.DeleteFlag) ? "false" : "true" });
           break;
         case "?": setDialog("shortcuts"); break;
-        case "Escape": setDrawing(null); setPending(null); break;
+        case "Escape": setDrawing(null); break;
         default:
           if (/^[0-9]$/.test(e.key)) toggleSpecies(e.key);
       }
@@ -457,7 +521,6 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   };
 
   // ---- filters ---------------------------------------------------------------------------
-  const flagLabel = (label: string) => controls.find((c) => c.dataLabel === label)?.label ?? label;
   const speciesLabels = (row: Row) => palette.items.filter((i) => isTrue(row.values[i.flag])).map((i) => {
     const n = i.counter ? row.values[i.counter] : "";
     return flagLabel(i.flag) + (n && n !== "0" && n !== "1" ? ` ×${n}` : "");
@@ -515,6 +578,10 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
               setMenuOpen(false);
               try { toast.push("success", t("csv.done", { path: (await api.exportCsv()).path })); } catch (e) { toast.error(e); }
             }}>{t("menu.exportCsv")}</button>
+            <button role="menuitem" onClick={async () => {
+              setMenuOpen(false);
+              try { toast.push("success", t("csv.done", { path: (await api.exportEvents()).path })); } catch (e) { toast.error(e); }
+            }}>{t("menu.exportEvents")}</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); setDialog("settings"); }}>{t("menu.settings")}</button>
             <button role="menuitem" onClick={() => { setMenuOpen(false); setDialog("shortcuts"); }}>{t("menu.shortcuts")}</button>
           </div>
@@ -599,10 +666,20 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
               </>
             )}
             <span style={{ flex: 1 }} />
+            {detail && detail.sameFileRows.length > 1 && (
+              <button className="chip" title={t("event.rowHint")} aria-label={t("event.rowNext")}
+                      onClick={() => {
+                        const rows = detail.sameFileRows;
+                        loadDetail(rows[(rows.indexOf(detail.id) + 1) % rows.length]);
+                      }}>
+                {t("event.rowOf", { n: detail.sameFileRows.indexOf(detail.id) + 1, total: detail.sameFileRows.length })}
+              </button>
+            )}
             {currentRow && <span className="pos" title={currentRow.values.RelativePath}>{currentRow.values.File} · {currentRow.values.DateTime}</span>}
           </div>
           {view === "grid" ? (
             <Grid mediaSession={mediaSession} ids={ids} rows={rowsRef.current} need={need} selection={selection} currentId={currentId}
+                  duplicates={duplicates}
                   onPick={pick} onOpen={(at) => { setIndex(at); setView("viewer"); }} speciesLabels={speciesLabels} />
           ) : view === "table" ? (
             <Spreadsheet
@@ -640,8 +717,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
                         saveGuides([...folderGuides.guides, { id: crypto.randomUUID?.() ?? String(Date.now()), shape, points, name, color: "#FFFFFF", width: 2 }]);
                         setDrawing(null);
                       }}
-                      videoInfo={videoInfoId === detail?.id ? videoInfo : null} intervals={detail?.intervals ?? []}
-                      pendingStartFrame={pending?.kind === "video" && pending.fileId === detail?.id ? pending.frame ?? null : null}
+                      videoInfo={videoInfoId === detail?.id ? videoInfo : null}
                       playbackRate={playbackRate}
                       onFrame={(f) => {
                         frameRef.current = f;
@@ -651,9 +727,8 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
                 videoInfo?.available === false ? <div className="timeline">{t("video.noFfmpeg")}</div>
                 : !videoInfo ? <div className="timeline">{t("video.loading")}</div>
                 : <FrameTimeline viewerRef={viewerRef} frameTimes={frameTimes} exact={!!videoInfo.exactTimes}
-                                 intervals={detail.intervals} fileId={detail.id}
-                                 playbackRate={playbackRate} onPlaybackRateChange={setPlaybackRate}
-                                 pendingStartFrame={pending?.kind === "video" && pending.fileId === detail.id ? pending.frame ?? null : null} />
+                                 segments={segments}
+                                 playbackRate={playbackRate} onPlaybackRateChange={setPlaybackRate} />
               )}
             </>
           )}
@@ -666,12 +741,18 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
                        detail={detail}
                        palette={palette} locked={locked} readOnly={project.readOnly} bulkCount={bulkCount}
                        onChange={change} onCopyPrevious={copyPrevious} canCopyPrevious={index > 0}
-                       onDuplicate={duplicateRecord} />
-            {detail && bulkCount <= 1 && (
-              <RestPanel kind={detail.kind} intervals={detail.intervals} pending={pending}
-                         columns={project.settings.restColumns} onDelete={deleteInterval} onJump={jumpInterval}
-                         onCancelPending={() => setPending(null)} readOnly={project.readOnly} frameTimes={frameTimes} />
-            )}
+                       onDuplicate={duplicateRecord}
+                       afterSpecies={detail && bulkCount <= 1 && (
+                         <EventPanel kind={detail.kind} fileId={detail.sameFileRows[0] ?? detail.id} events={detail.events}
+                                     openEvents={openEvents} speciesLabel={flagLabel} palette={palette.items}
+                                     configured={Object.entries(project.eventColumns ?? {}).some(([k, v]) =>
+                                       ["entry", "exit", "exitFile", "startInside", "endInside", "duration"].includes(k) && !!v)}
+                                     readOnly={project.readOnly}
+                                     onDelete={(id) => { if (window.confirm(t("event.confirmDelete"))) eventAction(() => api.deleteEvent(id)); }}
+                                     onJump={jumpEvent} onEnd={(e, inside) => endEvent(inside, e)}
+                                     onReopen={(e) => eventAction(() => api.changeEvent(e.id, { reopen: true }))}
+                                     onSpecies={(e, species) => eventAction(() => api.changeEvent(e.id, { species }))} />
+                       )} />
             <ColorPanel value={color} onChange={setColor} hasFolderDefault={folderColor !== null} readOnly={project.readOnly}
                         onSaveFolder={async () => {
                           try {
@@ -699,6 +780,10 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
                         onProject={(p) => { setProject(p); rowsRef.current.clear(); setRowsVersion((v) => v + 1); reloadIds(currentId); }} />
       )}
       {dialog === "shortcuts" && <ShortcutsDialog onClose={() => setDialog(null)} />}
+      {chooser && (
+        <ChoiceDialog title={chooser.title} options={chooser.options}
+                      onDone={(v) => { chooser.resolve(v); setChooser(null); }} />
+      )}
       {dialog === "recognitions" && (
         <RecognitionDialog info={info} project={project} onClose={() => setDialog(null)}
                            onDone={async () => { setProject(await api.project()); loadDetail(currentId); }} />
@@ -708,10 +793,9 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
 }
 
 /** Keeps its own frame state so the rest of the workspace does not re-render on every frame. */
-function FrameTimeline({ viewerRef, frameTimes, exact, intervals, fileId, pendingStartFrame, playbackRate, onPlaybackRateChange }: {
-  viewerRef: React.RefObject<ViewerHandle>; frameTimes: number[]; exact: boolean; intervals: Interval[];
-  fileId: number; pendingStartFrame: number | null;
-  playbackRate: number; onPlaybackRateChange: (rate: number) => void;
+function FrameTimeline({ viewerRef, frameTimes, exact, segments, playbackRate, onPlaybackRateChange }: {
+  viewerRef: React.RefObject<ViewerHandle>; frameTimes: number[]; exact: boolean; segments: Segment[];
+  playbackRate?: number; onPlaybackRateChange?: (rate: number) => void;
 }) {
   const [frame, setFrame] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -728,8 +812,7 @@ function FrameTimeline({ viewerRef, frameTimes, exact, intervals, fileId, pendin
     return () => cancelAnimationFrame(raf);
   }, [viewerRef]);
   return (
-    <Timeline frame={frame} total={frameTimes.length} frameTimes={frameTimes} intervals={intervals}
-              pendingStartFrame={pendingStartFrame} exact={exact} fileId={fileId}
+    <Timeline frame={frame} total={frameTimes.length} frameTimes={frameTimes} segments={segments} exact={exact}
               playbackRate={playbackRate} onPlaybackRateChange={onPlaybackRateChange}
               isPlaying={isPlaying}
               onTogglePlay={() => viewerRef.current?.togglePlay()}

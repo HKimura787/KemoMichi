@@ -29,7 +29,7 @@ export function speciesChange(palette: Palette, row: Row | null, flag: string, o
   return values;
 }
 
-export function DataPanel({ controls, row, detail, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious, onDuplicate }: {
+export function DataPanel({ controls, row, detail, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious, onDuplicate, afterSpecies }: {
   controls: Control[];
   row: Row | null;
   detail?: FileDetail | null;
@@ -41,6 +41,7 @@ export function DataPanel({ controls, row, detail, palette, locked, readOnly, bu
   onCopyPrevious: () => void;
   canCopyPrevious: boolean;
   onDuplicate?: () => void;
+  afterSpecies?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const byLabel = new Map(controls.map((c) => [c.dataLabel, c]));
@@ -133,6 +134,8 @@ export function DataPanel({ controls, row, detail, palette, locked, readOnly, bu
           })}
         </div>
       )}
+
+      {afterSpecies}
 
       <div className="section-title">{t("data.other")}</div>
       {!bulk && (
