@@ -30,7 +30,8 @@ def image(tmp_path, name="source.jpg", color="blue"):
 def old_entry(cache, name, size, used, accessed=100):
     path = cache / f"{hashlib.sha1(name.encode()).hexdigest()}.mp4"
     path.write_bytes(b"x" * size)
-    os.utime(path, ns=(accessed, used))
+    # Whole seconds keep distinct last-use times on Windows and coarser filesystems.
+    os.utime(path, (accessed, used))
     return path
 
 
@@ -98,8 +99,8 @@ def test_recently_reused_entry_survives_next_write(cache, tmp_path, monkeypatch)
     first_source = image(tmp_path, "first.jpg", "blue")
     first = media.image_rendition(first_source, 320)
     second = media.image_rendition(image(tmp_path, "second.jpg", "red"), 320)
-    os.utime(first, ns=(10, 10))
-    os.utime(second, ns=(20, 20))
+    os.utime(first, (10, 10))
+    os.utime(second, (20, 20))
     assert media.image_rendition(first_source, 320) == first
     monkeypatch.setenv("KEMOMICHI_CACHE_MAX_BYTES", "1500")
     third = media.image_rendition(image(tmp_path, "third.jpg", "green"), 320)
