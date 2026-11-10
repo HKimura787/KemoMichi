@@ -1,0 +1,79 @@
+name: Desktop builds
+
+on:
+  workflow_dispatch:
+  pull_request:
+    paths:
+      - 'desktop/**'
+      - 'download/**'
+      - 'tools/package_desktop.py'
+      - 'src/**'
+      - 'web/**'
+      - 'pyproject.toml'
+      - 'uv.lock'
+      - '.github/workflows/desktop-build.yml'
+
+permissions:
+  contents: read
+
+jobs:
+  package:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15
+            label: macOS-arm64
+          - os: macos-15-intel
+            label: macOS-x86_64
+          - os: windows-latest
+            label: Windows-x86_64
+    runs-on: ${{ matrix.os }}
+    env:
+      UV_PYTHON_DOWNLOADS: never
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: astral-sh/setup-uv@v6
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install video tools on Mac
+        if: runner.os == 'macOS'
+        run: brew install ffmpeg
+      - name: Install video tools and installer compiler on Windows
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          choco install ffmpeg innosetup -y --no-progress
+          $tool = Get-ChildItem "$env:ChocolateyInstall\lib\ffmpeg" -Filter ffmpeg.exe -Recurse | Select-Object -First 1
+          if (!$tool) { throw 'Could not find the actual FFmpeg binary' }
+          "KEMOMICHI_FFMPEG_DIR=$($tool.DirectoryName)" >> $env:GITHUB_ENV
+      - run: uv sync --locked --group desktop
+      - run: npm ci
+        working-directory: web
+      - run: uv run --frozen --group desktop python tools/package_desktop.py
+      - name: Verify standalone Mac bundle without Homebrew on PATH
+        if: runner.os == 'macOS'
+        run: |
+          APP="$PWD/dist/KemoMichi.app/Contents/MacOS/KemoMichi"
+          cd "$RUNNER_TEMP"
+          PATH=/usr/bin:/bin "$APP" --smoke-test --state-dir "$RUNNER_TEMP/kemo-check" --report "$RUNNER_TEMP/smoke.json"
+          cat "$RUNNER_TEMP/smoke.json"
+      - name: Verify standalone Windows bundle without Python on PATH
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $app = "$PWD\dist\KemoMichi\KemoMichi.exe"
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $report = "$env:RUNNER_TEMP\smoke.json"
+          $process = Start-Process -FilePath $app -ArgumentList @('--smoke-test', '--state-dir', "$env:RUNNER_TEMP\kemo-check", '--report', $report) -Wait -PassThru
+          Get-Content $report
+          if ($process.ExitCode -ne 0) { throw 'Packaged smoke test failed' }
+      - uses: actions/upload-artifact@v4
+        with:
+          name: KemoMichi-${{ matrix.label }}
+          path: download/
+          if-no-files-found: error

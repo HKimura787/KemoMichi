@@ -20,14 +20,13 @@ export function OpenScreen({ info, onOpened, onCancel }: {
   const { t } = useI18n();
   const toast = useToast();
   const [selected, setSelected] = useState<{ path: string; kind: string } | null>(null);
-  const [ddbPath, setDdbPath] = useState("");
+  const [workflow, setWorkflow] = useState<"existing" | "new">("existing");
   const [opening, setOpening] = useState(false);
   const operation = useRef(false);
   const [folder, setFolder] = useState<string>("");
   const [creating, setCreating] = useState<string | null>(null);
   const [mode, setMode] = useState<"none" | "template" | "demo">("none");
   const busy = opening || creating !== null;
-  const path = ddbPath.trim().replace(/^(['"])(.*)\1$/, "$2");
 
   useEffect(() => {
     if (!onCancel || busy || mode !== "none") return;
@@ -79,39 +78,38 @@ export function OpenScreen({ info, onOpened, onCancel }: {
         </button>
       )}
       <h1>{t("open.title")}</h1>
-      <p style={{ margin: 0 }}>{t("open.lead")}</p>
+      <div className="open-workflows" role="group" aria-label={t("open.workflow")}>
+        <button className={`btn${workflow === "existing" ? " main" : ""}`} aria-pressed={workflow === "existing"}
+                disabled={busy} onClick={() => { setWorkflow("existing"); setSelected(null); }}>
+          {t("open.existing")}
+        </button>
+        <button className={`btn${workflow === "new" ? " main" : ""}`} aria-pressed={workflow === "new"}
+                disabled={busy} onClick={() => { setWorkflow("new"); setSelected(null); }}>
+          {t("open.newFromTemplate")}
+        </button>
+      </div>
+      <p style={{ margin: 0 }}>{t(workflow === "existing" ? "open.existingLead" : "open.newLead")}</p>
       <fieldset className="open-controls" disabled={busy}>
-        <form id="open-project" className="field" onSubmit={(event) => {
-          event.preventDefault();
-          open(path);
-        }}>
-          <label htmlFor="ddb-path">{t("open.ddbPath")}</label>
-          <input id="ddb-path" type="text" value={ddbPath} required spellCheck={false} autoCapitalize="none"
-                 autoCorrect="off" aria-describedby="ddb-path-hint"
-                 onChange={(event) => { setDdbPath(event.target.value); setSelected(null); }} />
-          <span id="ddb-path-hint" className="note">
-            {t(info.serverMode ? "open.ddbPathServerHint" : "open.ddbPathHint")}
-          </span>
-        </form>
-        <FileBrowser start={start} kinds={["ddb", "tdb"]} places={info.startFolders}
-                     selected={selected?.path ?? null} onFolder={setFolder}
+        <FileBrowser key={workflow} start={folder || start} kinds={workflow === "existing" ? ["ddb"] : ["tdb"]} places={info.startFolders}
+                     selected={selected?.path ?? null} onFolder={(next) => { setFolder(next); setSelected(null); }}
+                     onPathSelect={workflow === "existing" ? (item) => open(item.path) : undefined}
                      onSelect={(item) => {
                        if (item.kind === "ddb!") open(item.path);
                        else {
                          const kind = item.kind.replace("!", "");
                          setSelected({ path: item.path, kind });
-                         setDdbPath(kind === "ddb" ? item.path : "");
                        }
                      }} />
         <div style={{ display: "flex", gap: 8, flexWrap: "wrap" }}>
-          <button className="btn main" type="submit" form="open-project" disabled={!path}>
-            {t("open.openDdb")}
-          </button>
-          <button className="btn" disabled={!path} onClick={() => open(path, true)}>
-            {t("open.openReadOnly")}
-          </button>
+          {workflow === "existing" ? <>
+            <button className="btn main" disabled={selected?.kind !== "ddb"} onClick={() => selected && open(selected.path)}>
+              {t("open.openDdb")}
+            </button>
+            <button className="btn" disabled={selected?.kind !== "ddb"} onClick={() => selected && open(selected.path, true)}>
+              {t("open.openReadOnly")}
+            </button>
+          </> : <button className="btn main" disabled={!folder} onClick={() => setMode("template")}>{t("open.chooseAndCreate")}</button>}
           <span style={{ flex: 1 }} />
-          <button className="btn" disabled={!folder} onClick={() => setMode("template")}>{t("open.createHere")}</button>
           <button className="btn" disabled={!folder} onClick={() => setMode("demo")}>{t("open.demo")}</button>
         </div>
       </fieldset>
@@ -119,7 +117,7 @@ export function OpenScreen({ info, onOpened, onCancel }: {
       {creating && <p role="status">{creating}</p>}
 
       {mode === "template" && (
-        <TemplatePicker info={info} folder={folder} onCancel={() => setMode("none")}
+        <TemplatePicker info={info} folder={folder} initialTemplate={selected?.kind === "tdb" ? selected.path : null} onCancel={() => setMode("none")}
                         onPick={(template) => create(template, false)} />
       )}
       {mode === "demo" && (
@@ -136,11 +134,11 @@ export function OpenScreen({ info, onOpened, onCancel }: {
   );
 }
 
-function TemplatePicker({ info, folder, onCancel, onPick }: {
-  info: Info; folder: string; onCancel: () => void; onPick: (path: string) => void;
+function TemplatePicker({ info, folder, initialTemplate, onCancel, onPick }: {
+  info: Info; folder: string; initialTemplate: string | null; onCancel: () => void; onPick: (path: string) => void;
 }) {
   const { t } = useI18n();
-  const [template, setTemplate] = useState<string | null>(null);
+  const [template, setTemplate] = useState<string | null>(initialTemplate);
   return (
     <Dialog title={t("open.chooseTemplate")} onClose={onCancel} wide
             actions={<>
@@ -150,7 +148,8 @@ function TemplatePicker({ info, folder, onCancel, onPick }: {
               </button>
             </>}>
       <p>{t("open.createLead")}</p>
-      <p className="path">{folder}</p>
+      <p className="path">{t("open.destination")}: {folder}</p>
+      {template && <p className="path">{t("open.outputName")}: {template.split(/[\\/]/).pop()?.replace(/\.tdb$/i, ".ddb")}</p>}
       <FileBrowser start={folder} kinds={["tdb"]} places={info.startFolders} selected={template}
                    onSelect={(item) => setTemplate(item.path)} />
     </Dialog>

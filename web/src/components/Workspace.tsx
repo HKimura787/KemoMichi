@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, ApiError } from "../api";
 import { useI18n } from "../i18n";
-import type { ColorAdjust, Detection, FileDetail, Filter, Guide, Info, Interval, Palette, Project, Row, ShapeKind, VideoInfo } from "../types";
+import type { ColorAdjust, Detection, FileDetail, Filter, Guide, Info, Interval, Palette, Project, ReviewPosition, Row, ShapeKind, VideoInfo } from "../types";
 import { useToast } from "../ui";
 import { DataPanel, isTrue, speciesChange } from "./DataPanel";
 import { RecognitionDialog, SettingsDialog, ShortcutsDialog } from "./Dialogs";
@@ -12,6 +12,8 @@ import { NEUTRAL_COLOR, Timeline, Viewer, type ViewerHandle } from "./Viewer";
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable);
 
+const PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+
 export function Workspace({ info, project, setProject, active, onOpenProject }: {
   info: Info; project: Project; setProject: (p: Project) => void; active: boolean; onOpenProject: () => void;
 }) {
@@ -20,17 +22,22 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const viewerRef = useRef<ViewerHandle>(null);
   // File IDs repeat across projects; keep cached media local to this opened project.
   const [mediaSession] = useState(() => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
+  const resume = useRef(project.settings.reviewPosition);
+  const positionRef = useRef<ReviewPosition | null>(null);
+  const lastSavedPosition = useRef("");
+  const saveQueue = useRef(Promise.resolve());
 
-  const [filter, setFilter] = useState<Filter>({});
+  const [filter, setFilter] = useState<Filter>(resume.current?.filter ?? {});
   const [ids, setIds] = useState<number[]>([]);
   const [index, setIndex] = useState(0);
   const rowsRef = useRef(new Map<number, Row>());
   const [rowsVersion, setRowsVersion] = useState(0);
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const anchor = useRef<number | null>(null);
-  const [view, setView] = useState<"viewer" | "grid">("viewer");
+  const [view, setView] = useState<"viewer" | "grid">(resume.current?.view ?? "viewer");
   const [detail, setDetail] = useState<FileDetail | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
+  const [videoInfoId, setVideoInfoId] = useState<number | null>(null);
   const frameRef = useRef(0);
   const [pending, setPending] = useState<PendingStart | null>(null);
   const [saving, setSaving] = useState(0);
@@ -46,6 +53,37 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const [palette, setPalette] = useState<Palette>(project.settings.palette ?? { items: [], single: false });
   const [canUndo, setCanUndo] = useState(project.canUndo);
   const [canRedo, setCanRedo] = useState(project.canRedo);
+  const [playbackRate, setPlaybackRate] = useState(1);
+
+  const handleCapture = async () => {
+    if (!detail) return;
+    try {
+      const dataUrl = await viewerRef.current?.capture();
+      if (!dataUrl) {
+        toast.push("warning", t("capture.failed"));
+        return;
+      }
+      const baseName = detail.values.File ? detail.values.File.replace(/\.[^.]+$/, "") : `file_${detail.id}`;
+      const framePart = detail.kind === "video" ? `_f${frameRef.current}` : "";
+      const now = new Date();
+      const pad = (n: number) => String(n).padStart(2, "0");
+      const timestamp = `${now.getFullYear()}${pad(now.getMonth() + 1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}`;
+      const filename = `${baseName}${framePart}_cap_${timestamp}.jpg`;
+
+      await api.saveCapture(detail.id, filename, dataUrl);
+
+      const a = document.createElement("a");
+      a.href = dataUrl;
+      a.download = filename;
+      document.body.appendChild(a);
+      a.click();
+      document.body.removeChild(a);
+
+      toast.push("success", t("capture.saved", { filename }));
+    } catch (e) {
+      toast.error(e);
+    }
+  };
 
   useEffect(() => {
     if (!active) {
@@ -60,6 +98,46 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const currentRow = currentId !== null ? rowsRef.current.get(currentId) ?? null : null;
   const folder = currentRow?.values.RelativePath ?? "";
   const threshold = Number(project.settings.bboxThreshold ?? 0.2);
+
+  const savePosition = useCallback((keepalive = false) => {
+    const position = positionRef.current;
+    if (!position || project.readOnly) return;
+    const snapshot = JSON.stringify(position);
+    if (lastSavedPosition.current === snapshot) return;
+    lastSavedPosition.current = snapshot;
+    const payload = JSON.parse(snapshot) as ReviewPosition;
+    const write = () => api.saveReviewPosition(project.path, payload, keepalive).catch((error) => {
+      if (!(error instanceof ApiError && error.status === 409)) {
+        lastSavedPosition.current = "";
+        if (!keepalive) toast.error(error);
+      }
+    });
+    if (keepalive) void write();
+    else saveQueue.current = saveQueue.current.then(write);
+  }, [project.path, project.readOnly, toast.error]);
+
+  useEffect(() => {
+    if (currentId === null) return;
+    const frame = positionRef.current?.fileId === currentId ? frameRef.current
+      : resume.current?.fileId === currentId ? resume.current.frame : 0;
+    frameRef.current = frame;
+    positionRef.current = { fileId: currentId, frame, filter, view };
+    savePosition();
+  }, [currentId, filter, view, savePosition]);
+
+  useEffect(() => {
+    const timer = window.setInterval(() => savePosition(), 1000);
+    const onHide = () => savePosition(true);
+    const onVisibility = () => { if (document.visibilityState === "hidden") onHide(); };
+    window.addEventListener("pagehide", onHide);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearInterval(timer);
+      window.removeEventListener("pagehide", onHide);
+      document.removeEventListener("visibilitychange", onVisibility);
+      savePosition(true);
+    };
+  }, [savePosition]);
 
   useEffect(() => {
     if (project.settings.palette) setPalette(project.settings.palette);
@@ -96,7 +174,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     }
   }, [filter, toast.error]);
 
-  useEffect(() => { reloadIds(currentId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
+  useEffect(() => { reloadIds(currentId ?? resume.current?.fileId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
 
   useEffect(() => {
     if (!ids.length) return;
@@ -120,10 +198,16 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   useEffect(() => { loadDetail(currentId); }, [currentId, loadDetail]);
 
   useEffect(() => {
+    let cancelled = false;
     setVideoInfo(null);
+    setVideoInfoId(null);
     if (detail?.kind === "video" && detail.exists) {
-      api.videoInfo(detail.id).then(setVideoInfo).catch(toast.error);
+      const id = detail.id;
+      api.videoInfo(id).then((info) => {
+        if (!cancelled) { setVideoInfo(info); setVideoInfoId(id); }
+      }).catch((error) => { if (!cancelled) toast.error(error); });
     }
+    return () => { cancelled = true; };
   }, [detail?.id, detail?.kind, detail?.exists, toast.error]);
 
   // ---- per-folder settings (guides, colour) ----------------------------------------------
@@ -295,6 +379,19 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
         case ">": viewerRef.current?.step(10); break;
         case "<": viewerRef.current?.step(-10); break;
         case " ": e.preventDefault(); viewerRef.current?.togglePlay(); break;
+        case "c": case "C": handleCapture(); break;
+        case "[": {
+          const idx = PLAYBACK_RATES.indexOf(playbackRate);
+          const next = idx > 0 ? PLAYBACK_RATES[idx - 1] : PLAYBACK_RATES[0];
+          setPlaybackRate(next);
+          break;
+        }
+        case "]": {
+          const idx = PLAYBACK_RATES.indexOf(playbackRate);
+          const next = idx >= 0 && idx < PLAYBACK_RATES.length - 1 ? PLAYBACK_RATES[idx + 1] : PLAYBACK_RATES[PLAYBACK_RATES.length - 1];
+          setPlaybackRate(next);
+          break;
+        }
         case "s": case "S": markStart(); break;
         case "e": case "E": markEnd(); break;
         case "g": case "G": setShowGuides((v) => !v); break;
@@ -475,6 +572,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
               <button className="icon-btn" aria-pressed={showBoxes} onClick={() => setShowBoxes((v) => !v)}>{t("viewer.bboxes")}</button>
             )}
             <button className="icon-btn" onClick={() => viewerRef.current?.fit()}>{t("viewer.fit")}</button>
+            <button className="icon-btn" onClick={handleCapture} title={`${t("viewer.capture")} (C)`}>📷 {t("viewer.capture")}</button>
             <span style={{ flex: 1 }} />
             {currentRow && <span className="pos" title={currentRow.values.RelativePath}>{currentRow.values.File} · {currentRow.values.DateTime}</span>}
           </div>
@@ -483,7 +581,9 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
                   onPick={pick} onOpen={(at) => { setIndex(at); setView("viewer"); }} speciesLabels={speciesLabels} />
           ) : (
             <>
-              <Viewer ref={viewerRef} mediaSession={mediaSession} detail={detail}
+              <Viewer key={detail?.id ?? "empty"} ref={viewerRef} mediaSession={mediaSession} detail={detail}
+                      initialFrame={positionRef.current?.fileId === detail?.id ? (positionRef.current?.frame ?? 0) : 0}
+                      onPositionCommit={() => savePosition()}
                       missingPath={currentRow ? `${currentRow.values.RelativePath}\\${currentRow.values.File}` : ""}
                       color={color} compare={compare}
                       guides={folderGuides.guides} showGuides={showGuides}
@@ -495,14 +595,19 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
                         saveGuides([...folderGuides.guides, { id: crypto.randomUUID?.() ?? String(Date.now()), shape, points, name, color: "#FFFFFF", width: 2 }]);
                         setDrawing(null);
                       }}
-                      videoInfo={videoInfo} intervals={detail?.intervals ?? []}
+                      videoInfo={videoInfoId === detail?.id ? videoInfo : null} intervals={detail?.intervals ?? []}
                       pendingStartFrame={pending?.kind === "video" && pending.fileId === detail?.id ? pending.frame ?? null : null}
-                      onFrame={(f) => { frameRef.current = f; }} />
+                      playbackRate={playbackRate}
+                      onFrame={(f) => {
+                        frameRef.current = f;
+                        if (positionRef.current && positionRef.current.fileId === detail?.id) positionRef.current.frame = f;
+                      }} />
               {detail?.kind === "video" && (
                 videoInfo?.available === false ? <div className="timeline">{t("video.noFfmpeg")}</div>
                 : !videoInfo ? <div className="timeline">{t("video.loading")}</div>
                 : <FrameTimeline viewerRef={viewerRef} frameTimes={frameTimes} exact={!!videoInfo.exactTimes}
                                  intervals={detail.intervals} fileId={detail.id}
+                                 playbackRate={playbackRate} onPlaybackRateChange={setPlaybackRate}
                                  pendingStartFrame={pending?.kind === "video" && pending.fileId === detail.id ? pending.frame ?? null : null} />
               )}
             </>
@@ -556,22 +661,32 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
 }
 
 /** Keeps its own frame state so the rest of the workspace does not re-render on every frame. */
-function FrameTimeline({ viewerRef, frameTimes, exact, intervals, fileId, pendingStartFrame }: {
+function FrameTimeline({ viewerRef, frameTimes, exact, intervals, fileId, pendingStartFrame, playbackRate, onPlaybackRateChange }: {
   viewerRef: React.RefObject<ViewerHandle>; frameTimes: number[]; exact: boolean; intervals: Interval[];
   fileId: number; pendingStartFrame: number | null;
+  playbackRate: number; onPlaybackRateChange: (rate: number) => void;
 }) {
   const [frame, setFrame] = useState(0);
+  const [isPlaying, setIsPlaying] = useState(false);
   useEffect(() => {
     let raf = 0;
     const tick = () => {
       const f = viewerRef.current?.currentFrame() ?? 0;
       setFrame((old) => (old === f ? old : f));
+      const p = viewerRef.current?.isPlaying() ?? false;
+      setIsPlaying((old) => (old === p ? old : p));
       raf = requestAnimationFrame(tick);
     };
     raf = requestAnimationFrame(tick);
     return () => cancelAnimationFrame(raf);
   }, [viewerRef]);
-  return <Timeline frame={frame} total={frameTimes.length} frameTimes={frameTimes} intervals={intervals}
-                   pendingStartFrame={pendingStartFrame} exact={exact} fileId={fileId}
-                   onSeek={(f) => viewerRef.current?.seekFrame(f)} />;
+  return (
+    <Timeline frame={frame} total={frameTimes.length} frameTimes={frameTimes} intervals={intervals}
+              pendingStartFrame={pendingStartFrame} exact={exact} fileId={fileId}
+              playbackRate={playbackRate} onPlaybackRateChange={onPlaybackRateChange}
+              isPlaying={isPlaying}
+              onTogglePlay={() => viewerRef.current?.togglePlay()}
+              onStep={(delta) => viewerRef.current?.step(delta)}
+              onSeek={(f) => viewerRef.current?.seekFrame(f)} />
+  );
 }

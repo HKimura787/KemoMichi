@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS intervals (
     individual TEXT NOT NULL DEFAULT '', species TEXT NOT NULL DEFAULT '', note TEXT NOT NULL DEFAULT '',
     created_at TEXT NOT NULL, updated_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS idx_intervals_file ON intervals (file_id);
+CREATE TABLE IF NOT EXISTS file_rest (
+    file_id INTEGER PRIMARY KEY,
+    start_seconds TEXT,
+    end_seconds TEXT,
+    duration_seconds TEXT,
+    interval_count INTEGER DEFAULT 0,
+    updated_at TEXT NOT NULL);
 """
 
 
@@ -139,3 +146,31 @@ class Sidecar:
         with self.lock, self.conn:
             self.conn.execute("DELETE FROM intervals WHERE id = ?", (interval_id,))
         return existing
+
+    # file_rest ------------------------------------------------------------------------------
+
+    def file_rest(self, file_id: int) -> dict | None:
+        with self.lock:
+            row = self.conn.execute("SELECT * FROM file_rest WHERE file_id = ?", (file_id,)).fetchone()
+        return dict(row) if row else None
+
+    def save_file_rest(self, file_id: int, start_seconds: str, end_seconds: str,
+                       duration_seconds: str, interval_count: int) -> dict | None:
+        now = datetime.now().isoformat(timespec="seconds")
+        with self.lock, self.conn:
+            self.conn.execute(
+                "INSERT OR REPLACE INTO file_rest "
+                "(file_id, start_seconds, end_seconds, duration_seconds, interval_count, updated_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (file_id, start_seconds, end_seconds, duration_seconds, interval_count, now),
+            )
+        return self.file_rest(file_id)
+
+    def delete_file_rest(self, file_id: int) -> None:
+        with self.lock, self.conn:
+            self.conn.execute("DELETE FROM file_rest WHERE file_id = ?", (file_id,))
+
+    def all_file_rest(self) -> dict[int, dict]:
+        with self.lock:
+            rows = self.conn.execute("SELECT * FROM file_rest").fetchall()
+        return {r["file_id"]: dict(r) for r in rows}

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 from pathlib import Path
@@ -30,6 +31,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     ws = Workspace()
     jobs = Jobs()
     app.state.workspace = ws
+    app.state.jobs = jobs
     app.state.config = config
 
     @app.exception_handler(ProjectError)
@@ -73,6 +75,10 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.get("/api/browse")
     def browse(path: str):
         folder = checked_path(path)
+        selected = None
+        if folder.is_file() and folder.suffix.lower() in (".ddb", ".tdb", ".json"):
+            selected = {"name": folder.name, "path": str(folder), "kind": folder.suffix.lower()[1:]}
+            folder = folder.parent
         if not folder.is_dir():
             raise HTTPException(404, detail={"error": "error.notFound", "params": {"path": path}})
         dirs, files = [], []
@@ -91,7 +97,8 @@ def create_app(config: ServerConfig) -> FastAPI:
             except OSError:
                 continue
         parent = folder.parent if folder.parent != folder and config.allowed(folder.parent) else None
-        return {"path": str(folder), "parent": str(parent) if parent else None, "dirs": dirs, "files": files}
+        return {"path": str(folder), "parent": str(parent) if parent else None, "dirs": dirs, "files": files,
+                "selected": selected}
 
     # ---- project -----------------------------------------------------------------------------
 
@@ -192,6 +199,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         row["detections"] = p.detections(file_id)
         row["markers"] = p.markers(file_id)
         row["intervals"] = ws.sidecar.intervals(file_id)
+        row["fileRest"] = ws.sidecar.file_rest(file_id)
         row["kind"] = "video" if media.is_video(p.media_path(row)) else "image"
         row["exists"] = p.media_path(row).exists()
         return row
@@ -281,6 +289,22 @@ def create_app(config: ServerConfig) -> FastAPI:
 
     # ---- settings ------------------------------------------------------------------------
 
+    @app.put("/api/review-position")
+    def save_review_position(expectedPath: str = Body(...), fileId: int = Body(..., ge=1),
+                             frame: int = Body(0, ge=0), filter: dict | None = Body(None),
+                             view: str = Body("viewer")):
+        p = project()
+        if str(p.path) != expectedPath:
+            raise HTTPException(409, detail={"error": "error.projectChanged"})
+        if p.file(fileId) is None:
+            raise HTTPException(404, detail={"error": "error.fileNotFound"})
+        if view not in ("viewer", "grid"):
+            raise HTTPException(422, detail={"error": "error.badSetting"})
+        if p.read_only:
+            return {"saved": False}
+        ws.sidecar.set("reviewPosition", {"fileId": fileId, "frame": frame, "filter": filter or {}, "view": view})
+        return {"saved": True}
+
     @app.put("/api/settings/{key}")
     def put_setting(key: str, value=Body(..., embed=True)):
         ws.sidecar.set(key, value)
@@ -346,13 +370,36 @@ def create_app(config: ServerConfig) -> FastAPI:
 
     @app.post("/api/export/csv")
     def export(target: str | None = Body(None, embed=True)):
-        out = export_csv(project(), checked_path(target) if target else None)
+        out = export_csv(project(), checked_path(target) if target else None, sidecar=ws.sidecar)
         return {"path": str(out)}
 
     @app.get("/api/export/csv")
     def download_csv():
-        out = export_csv(project())
+        out = export_csv(project(), sidecar=ws.sidecar)
         return FileResponse(out, media_type="text/csv", filename=out.name)
+
+    @app.post("/api/capture")
+    def capture(data: dict = Body(...)):
+        p = project()
+        captures_dir = p.root / "captures"
+        captures_dir.mkdir(parents=True, exist_ok=True)
+        filename = data.get("filename") or "capture.jpg"
+        safe_name = Path(filename).name
+        if not safe_name.lower().endswith((".jpg", ".jpeg", ".png")):
+            safe_name += ".jpg"
+        target = captures_dir / safe_name
+        stem = target.stem
+        suffix = target.suffix
+        counter = 1
+        while target.exists():
+            target = captures_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+        raw_b64 = data.get("image", "")
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+        image_bytes = base64.b64decode(raw_b64)
+        target.write_bytes(image_bytes)
+        return {"path": str(target), "filename": target.name, "relative": f"captures/{target.name}"}
 
     # ---- S/E intervals -------------------------------------------------------------------
 

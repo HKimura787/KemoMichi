@@ -80,27 +80,41 @@ export function Dialog({ title, onClose, children, actions, wide }: {
 export interface BrowseResult { path: string; kind: string }
 
 /** Folder browser served by the backend, so it works the same in the desktop app and in a browser. */
-export function FileBrowser({ start, kinds, selected, onSelect, onFolder, places }: {
+export function FileBrowser({ start, kinds, selected, onSelect, onPathSelect, onFolder, places }: {
   start: string;
   kinds: string[];
   selected: string | null;
   onSelect: (item: BrowseResult) => void;
+  onPathSelect?: (item: BrowseResult) => void;
   onFolder?: (path: string) => void;
   places: { name: string; path: string }[];
 }) {
   const { t } = useI18n();
   const toast = useToast();
   const [path, setPath] = useState(start);
+  const [inputPath, setInputPath] = useState(start);
   const [listing, setListing] = useState<Awaited<ReturnType<typeof api.browse>> | null>(null);
 
   useEffect(() => {
     let cancelled = false;
+    setListing(null);
+    onFolder?.("");
     api.browse(path).then((l) => {
       if (cancelled) return;
       setListing(l);
+      setInputPath(l.path);
       onFolder?.(l.path);
+      if (l.selected && kinds.includes(l.selected.kind)) {
+        onSelect(l.selected);
+        onPathSelect?.(l.selected);
+      }
       try { localStorage.setItem("kemomichi.lastFolder", l.path); } catch { /* ignore */ }
-    }).catch((e) => !cancelled && toast.error(e));
+    }).catch((e) => {
+      if (cancelled) return;
+      const fallback = places[0]?.path;
+      if (path === start && fallback && fallback !== path) setPath(fallback);
+      else toast.error(e);
+    });
     return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [path]);
@@ -113,6 +127,18 @@ export function FileBrowser({ start, kinds, selected, onSelect, onFolder, places
         {places.map((p) => <button key={p.path} onClick={() => setPath(p.path)}>{p.name}</button>)}
       </nav>
       <div>
+        <form className="browser-path" onSubmit={(event) => {
+          event.preventDefault();
+          const next = inputPath.trim().replace(/^(['"])(.*)\1$/, "$2");
+          if (next) setPath(next);
+        }}>
+          <label className="field" style={{ flex: 1 }}>
+            <span>{t("open.browsePath")}</span>
+            <input type="text" value={inputPath} spellCheck={false} autoCapitalize="none" autoCorrect="off"
+                   onChange={(event) => setInputPath(event.target.value)} />
+          </label>
+          <button className="btn" type="submit">{t("open.browse")}</button>
+        </form>
         <div className="path" style={{ marginBottom: 6 }}>{listing?.path}</div>
         <div className="listing" role="listbox" aria-label={listing?.path}>
           {listing?.parent && (

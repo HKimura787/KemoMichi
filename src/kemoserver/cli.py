@@ -83,7 +83,7 @@ def main(argv: list[str] | None = None) -> None:
     demo.add_argument("folder")
     demo.set_defaults(func=_demo)
 
-    csv = sub.add_parser("export-csv", help="write ImageData.csv like Timelapse2")
+    csv = sub.add_parser("export-csv", help="write a CSV with the same name as the data file")
     csv.add_argument("ddb")
     csv.add_argument("--output")
     csv.set_defaults(func=_export_csv)

@@ -92,30 +92,43 @@ def write_columns(project: TimelapseProject, sidecar: Sidecar, file_id: int) -> 
     """Recompute the mapped columns of one file from its intervals. Returns the values written."""
     settings = column_settings(sidecar)
     targets = {k: settings[k] for k in ("start", "end", "duration") if settings[k] in project.by_label}
+    intervals = [i for i in sidecar.intervals(file_id) if i["file_id"] == file_id]
+    intervals.sort(key=lambda i: Fraction(i["start_seconds"] or "0"))
+
+    if not intervals:
+        sidecar.delete_file_rest(file_id)
+        if targets:
+            values = {label: "" for label in targets.values()}
+            project.update([file_id], values, description="rest")
+            return values
+        return {}
+
+    # Always persist summary to sidecar so staying time is stored even if tdb has no matching column.
+    total = sum((Fraction(i["duration_seconds"]) for i in intervals), Fraction(0))
+    first_start = intervals[0]["start_seconds"]
+    last_end = intervals[-1]["end_seconds"]
+    dur_str = media.format_seconds(total)
+    sidecar.save_file_rest(file_id, first_start, last_end, dur_str, len(intervals))
+
     if not targets:
         return {}
+
     row = project.file(file_id)
     if row is None:
         return {}
     base = _parse(row["values"].get(C.DATE_TIME, ""))
-    intervals = [i for i in sidecar.intervals(file_id) if i["file_id"] == file_id]
-    intervals.sort(key=lambda i: Fraction(i["start_seconds"] or "0"))
+    mode = settings["multi"]
     values: dict[str, str] = {}
-    if not intervals:
-        values = {label: "" for label in targets.values()}
-    else:
-        mode = settings["multi"]
-        for key, label in targets.items():
-            ctype = project.by_label[label].type
-            list_ok = ctype in (C.NOTE, C.MULTI_LINE)
-            if mode == "list" and list_ok:
-                values[label] = ";".join(_format_for(ctype, base, i[f"{key}_seconds"]) for i in intervals)
-            elif mode == "sum" and key == "duration":
-                total = sum((Fraction(i["duration_seconds"]) for i in intervals), Fraction(0))
-                values[label] = _format_for(ctype, base, media.format_seconds(total))
-            elif mode == "sum" and key == "end":
-                values[label] = _format_for(ctype, base, intervals[-1]["end_seconds"])
-            else:
-                values[label] = _format_for(ctype, base, intervals[0][f"{key}_seconds"])
+    for key, label in targets.items():
+        ctype = project.by_label[label].type
+        list_ok = ctype in (C.NOTE, C.MULTI_LINE)
+        if mode == "list" and list_ok:
+            values[label] = ";".join(_format_for(ctype, base, i[f"{key}_seconds"]) for i in intervals)
+        elif mode == "sum" and key == "duration":
+            values[label] = _format_for(ctype, base, dur_str)
+        elif mode == "sum" and key == "end":
+            values[label] = _format_for(ctype, base, last_end)
+        else:
+            values[label] = _format_for(ctype, base, intervals[0][f"{key}_seconds"])
     project.update([file_id], values, description="rest")
     return values

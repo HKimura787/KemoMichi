@@ -142,3 +142,20 @@ def test_password_and_root_restriction(demo, tmp_path):
         assert outside.status_code == 403
         inside = c.get("/api/browse", params={"path": str(demo.parent)}, headers=auth).json()
         assert any(f["kind"] == "ddb" for f in inside["files"])
+
+
+def test_capture_and_file_rest(client):
+    # Test file_detail returns fileRest
+    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0001"})}).json()[0]
+    detail = client.get(f"/api/files/{vid}").json()
+    assert "fileRest" in detail
+
+    # Test save capture endpoint
+    # 1x1 black pixel JPEG base64
+    fake_img = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
+    res = client.post("/api/capture", json={"fileId": vid, "filename": "test_shot.jpg", "image": fake_img})
+    assert res.status_code == 200
+    data = res.json()
+    assert "path" in data
+    assert Path(data["path"]).exists()
+    assert Path(data["path"]).read_bytes() != b""

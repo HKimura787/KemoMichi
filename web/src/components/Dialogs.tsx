@@ -123,6 +123,7 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
       )}
 
       <div className="section-title">{t("settings.rest")}</div>
+      <p className="note" style={{ margin: "2px 0 6px" }}>{t("settings.restSidecarNote")}</p>
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 8 }}>
         {column("start")}{column("end")}{column("duration")}
       </div>
@@ -192,6 +193,8 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
     ["← / →", t("sc.prevNext")],
     [", / .", t("sc.frame")],
     ["Space", t("sc.play")],
+    ["[ / ]", t("sc.speed")],
+    ["C", t("sc.capture")],
     ["1 … 9, 0", t("sc.species")],
     ["S / E", t("sc.se")],
     ["G", t("sc.guides")],

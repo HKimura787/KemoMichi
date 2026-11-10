@@ -5,14 +5,13 @@ from __future__ import annotations
 import hashlib
 import json
 import os
-import shutil
-import subprocess
 import threading
 from fractions import Fraction
 from pathlib import Path
 
 from PIL import Image, ImageOps
 
+from .runtime import run_tool, tool_path
 from .timelapse.constants import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 THUMB_SIZE = 320
@@ -81,7 +80,7 @@ def image_size(path: Path) -> tuple[int, int]:
 
 
 def has_ffmpeg() -> bool:
-    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+    return tool_path("ffmpeg") is not None and tool_path("ffprobe") is not None
 
 
 def video_thumbnail(path: Path, size: int = THUMB_SIZE) -> Path | None:
@@ -94,8 +93,8 @@ def video_thumbnail(path: Path, size: int = THUMB_SIZE) -> Path | None:
         if target.exists():
             return target
         tmp = target.with_suffix(".tmp.jpg")
-        result = subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-frames:v", "1",
+        result = run_tool("ffmpeg",
+            ["-v", "error", "-y", "-i", str(path), "-frames:v", "1",
              "-vf", f"scale='min({size},iw)':-2", str(tmp)],
             capture_output=True)
         if result.returncode != 0 or not tmp.exists():
@@ -114,16 +113,16 @@ def video_info(path: Path) -> dict:
     with _lock_for(str(target)):
         if target.exists():
             return json.loads(target.read_text())
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        probe = run_tool("ffprobe",
+            ["-v", "error", "-select_streams", "v:0", "-show_entries",
              "stream=codec_name,width,height,r_frame_rate,avg_frame_rate,time_base:stream_tags=rotate:"
              "stream_side_data=rotation:format=duration,format_name",
              "-of", "json", str(path)], capture_output=True, text=True)
         meta = json.loads(probe.stdout or "{}")
         stream = (meta.get("streams") or [{}])[0]
         time_base = Fraction(stream.get("time_base") or "1/1000")
-        frames = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        frames = run_tool("ffprobe",
+            ["-v", "error", "-select_streams", "v:0", "-show_entries",
              "frame=best_effort_timestamp", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
         stamps = []
         for line in frames.stdout.splitlines():
@@ -209,8 +208,8 @@ def playable_video(path: Path, container: str = "mp4") -> Path | None:
             codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac",
                      "-movflags", "+faststart"]
         # passthrough keeps every frame and its timestamp: no frames dropped or duplicated.
-        result = subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-map", "0:v:0", "-map", "0:a?",
+        result = run_tool("ffmpeg",
+            ["-v", "error", "-y", "-i", str(path), "-map", "0:v:0", "-map", "0:a?",
              "-fps_mode", "passthrough", *codec, str(tmp)], capture_output=True)
         if result.returncode != 0:
             tmp.unlink(missing_ok=True)

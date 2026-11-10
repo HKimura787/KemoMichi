@@ -22,13 +22,19 @@ export function RestPanel({ kind, intervals, pending, columns, onDelete, onJump,
 }) {
   const { t } = useI18n();
   const configured = columns && (columns.start || columns.end || columns.duration);
+  const totalDuration = intervals.reduce((acc, i) => acc + (parseFloat(i.duration_seconds) || 0), 0);
   return (
     <>
       <div className="section-title">{t("rest.title")}</div>
       <p className="note" style={{ margin: 0 }}>
         <kbd>S</kbd> / <kbd>E</kbd> — {kind === "video" ? t("rest.hintVideo") : t("rest.hintSequence")}
       </p>
-      {!configured && <p className="note" style={{ margin: 0, color: "var(--km-warning)" }}>! {t("rest.noColumns")}</p>}
+      {!configured && <p className="note" style={{ margin: 0, opacity: 0.85 }}>{t("rest.sidecarMode")}</p>}
+      {intervals.length > 0 && (
+        <div className="note" style={{ fontWeight: 700, color: "var(--km-primary)" }}>
+          {t("rest.totalDuration", { seconds: Math.round(totalDuration * 100) / 100 })}
+        </div>
+      )}
       {pending && (
         <div className="bulk" role="status">
           {t("rest.started", { at: pending.label })}{" "}

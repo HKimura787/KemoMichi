@@ -6,9 +6,18 @@
 !tests/fixtures/**/*.ddb
 
 __pycache__/
+.DS_Store
 .venv/
 node_modules/
 web/dist/
 *.egg-info/
 .pytest_cache/
 *.tsbuildinfo
+build/
+dist/
+
+# 配布ファイルはビルドで配置し、GitHubではReleases / Actions成果物で共有する
+/download/**/*.dmg
+/download/**/*.exe
+/download/**/*.zip
+/download/**/SHA256SUMS.txt

@@ -15,6 +15,7 @@ def test_csv_matches_timelapse_format(demo):
     project = TimelapseProject(demo)
     project.update([1], {"Note": 'say "hi", ok'})
     path = export_csv(project)
+    assert path == demo.with_suffix(".csv")
     raw = path.read_bytes()
     assert raw.startswith(b"\xef\xbb\xbf")
     text = raw.decode("utf-8-sig")
@@ -104,6 +105,34 @@ def test_interval_columns_are_written(demo):
     assert values["StayStart"] == "0.1001"
     assert project.file(video_id)["values"]["StayEnd"] == values["StayEnd"]
     assert rest.locked_columns(sidecar) == {"StayStart", "StayEnd", "StayDuration"}
+
+
+@needs_ffmpeg
+def test_interval_stored_in_sidecar_without_tdb_columns(demo):
+    project = TimelapseProject(demo)
+    sidecar = Sidecar(demo)
+    video_id = project.ids({"text": "VID_0001"})[0]
+    # Do NOT set restColumns in sidecar (meaning no tdb column mapping)
+    sidecar.save_interval(rest.video_interval(project, video_id, 3, 33))
+    sidecar.save_interval(rest.video_interval(project, video_id, 60, 75))
+    values = rest.write_columns(project, sidecar, video_id)
+    # tdb values is empty because no mapped columns
+    assert values == {}
+    # but sidecar has file_rest stored!
+    file_rest = sidecar.file_rest(video_id)
+    assert file_rest is not None
+    assert file_rest["duration_seconds"] == "1.5015"
+    assert file_rest["interval_count"] == 2
+
+    # CSV export should include StayDuration_sec column
+    csv_path = demo.parent / "test_export.csv"
+    export_csv(project, csv_path, sidecar=sidecar)
+    text = csv_path.read_text(encoding="utf-8-sig")
+    assert "StayDuration_sec" in text
+    assert "1.5015" in text
+    intervals_csv = demo.parent / "test_export_intervals.csv"
+    assert intervals_csv.exists()
+
 
 
 def test_sequence_interval_uses_image_times(demo):

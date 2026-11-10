@@ -44,6 +44,13 @@ export interface RestColumns {
   multi: "first" | "sum" | "list";
 }
 
+export interface ReviewPosition {
+  fileId: number;
+  frame: number;
+  filter: Filter;
+  view: "viewer" | "grid";
+}
+
 export interface Project {
   path: string;
   root: string;
@@ -55,7 +62,7 @@ export interface Project {
   controls: Control[];
   total: number;
   hasRecognitions: boolean;
-  settings: { palette?: Palette; restColumns?: RestColumns; bboxThreshold?: number; [key: string]: unknown };
+  settings: { palette?: Palette; restColumns?: RestColumns; bboxThreshold?: number; reviewPosition?: ReviewPosition; [key: string]: unknown };
   lockedColumns: string[];
   categories: { detection: Record<string, string>; classification: Record<string, string> };
   folders: { path: string; count: number }[];
@@ -95,6 +102,7 @@ export interface FileDetail extends Row {
   detections: Detection[];
   markers: Record<string, [number, number][]>;
   intervals: Interval[];
+  fileRest?: { start_seconds: string; end_seconds: string; duration_seconds: string; interval_count: number } | null;
   kind: "image" | "video";
   exists: boolean;
 }

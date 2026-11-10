@@ -1,4 +1,4 @@
-import type { FileDetail, Filter, Info, Project, Row, VideoInfo } from "./types";
+import type { FileDetail, Filter, Info, Project, ReviewPosition, Row, VideoInfo } from "./types";
 
 export class ApiError extends Error {
   constructor(public key: string, public params: Record<string, unknown> = {}, public status = 0) {
@@ -31,8 +31,14 @@ export const api = {
   info: () => request<Info>("GET", "/api/info"),
   browse: (path: string) =>
     request<{ path: string; parent: string | null; dirs: { name: string; path: string }[];
-      files: { name: string; path: string; kind: string }[] }>("GET", `/api/browse?path=${encodeURIComponent(path)}`),
+      files: { name: string; path: string; kind: string }[];
+      selected: { name: string; path: string; kind: string } | null }>("GET", `/api/browse?path=${encodeURIComponent(path)}`),
   project: () => request<Project>("GET", "/api/project"),
+  saveReviewPosition: async (expectedPath: string, position: ReviewPosition, keepalive = false) => {
+    const response = await fetch("/api/review-position", { method: "PUT", keepalive,
+      headers: { "Content-Type": "application/json" }, body: JSON.stringify({ expectedPath, ...position }) });
+    if (!response.ok) throw new ApiError("error.unexpected", {}, response.status);
+  },
   open: (path: string, readOnly = false) => request<Project>("POST", "/api/project/open", { path, readOnly }),
   close: () => request("POST", "/api/project/close"),
   create: (folder: string, template: string | null, demo = false) =>
@@ -60,6 +66,8 @@ export const api = {
     request<Project & { templateUpdated: boolean }>("POST", "/api/template/species-counters", { flags, labelSuffix }),
   importRecognitions: (path: string) => request<{ report: any }>("POST", "/api/recognitions/import", { path }),
   exportCsv: () => request<{ path: string }>("POST", "/api/export/csv", {}),
+  saveCapture: (fileId: number, filename: string, image: string) =>
+    request<{ path: string; filename: string; relative: string }>("POST", "/api/capture", { fileId, filename, image }),
   videoInfo: (id: number) => request<VideoInfo>("GET", `/api/media/${id}/video-info`),
   createInterval: (data: Record<string, unknown>) => request<any>("POST", "/api/intervals", data),
   updateInterval: (id: number, data: Record<string, unknown>) => request<any>("PUT", `/api/intervals/${id}`, data),
