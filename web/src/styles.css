@@ -283,4 +283,3 @@ kbd { font-family: var(--km-mono); font-size: 14px; background: var(--km-ground)
 .cell-multi-options label { display: flex; align-items: center; gap: 6px; white-space: normal; }
 .virtual-spacer td { padding: 0 !important; border: none !important; background: transparent !important; }
 .empty-cell { text-align: center; padding: 32px !important; color: var(--km-text-sub); font-size: 14px; }
-

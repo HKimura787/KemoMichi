@@ -20,6 +20,72 @@ from kemocore.runtime import tool_path
 ROOT = Path(__file__).resolve().parents[1]
 
 
+def prepare_build_files(destination: Path) -> tuple[Path, Path]:
+    """Generate disposable build inputs; no desktop/ or download/ source folder is required."""
+    destination.mkdir(parents=True, exist_ok=True)
+    (destination / "launcher.py").write_text(
+        'from kemoserver.desktop import main\n\nif __name__ == "__main__":\n    main()\n', encoding="utf-8")
+    spec = destination / "KemoMichi.spec"
+    spec.write_text('''import os
+from pathlib import Path
+import sys
+
+prepared = Path(SPECPATH)
+root = prepared.parents[1]
+tool_folder = Path(os.environ["KEMOMICHI_BUILD_TOOLS"])
+suffix = ".exe" if sys.platform == "win32" else ""
+icon = str(prepared / ("KemoMichi.icns" if sys.platform == "darwin" else "KemoMichi.ico"))
+a = Analysis(
+    [str(prepared / "launcher.py")], pathex=[str(root / "src")],
+    binaries=[(str(tool_folder / (name + suffix)), "bin") for name in ("ffmpeg", "ffprobe")],
+    datas=[(str(root / "src/kemoserver/static"), "kemoserver/static"),
+           (str(root / "LICENSE"), "licenses"), (str(prepared / "licenses"), "licenses")],
+    hiddenimports=["uvicorn.logging", "uvicorn.loops.asyncio", "uvicorn.protocols.http.h11_impl", "uvicorn.lifespan.on"],
+    hookspath=[], runtime_hooks=[], excludes=[], noarchive=False,
+)
+pyz = PYZ(a.pure)
+exe = EXE(pyz, a.scripts, [], exclude_binaries=True, name="KemoMichi", console=False, debug=False,
+          strip=False, upx=False, icon=icon, codesign_identity=os.environ.get("KEMOMICHI_CODESIGN_IDENTITY"))
+collected = COLLECT(exe, a.binaries, a.datas, strip=False, upx=False, name="KemoMichi")
+if sys.platform == "darwin":
+    app = BUNDLE(collected, name="KemoMichi.app", icon=icon, bundle_identifier="jp.kemomichi.desktop",
+                 info_plist={"CFBundleShortVersionString": os.environ["KEMOMICHI_BUILD_VERSION"],
+                             "NSHighResolutionCapable": True})
+''', encoding="utf-8")
+    installer = destination / "windows.iss"
+    installer.write_text(r'''#define AppVersion GetEnv('KEMOMICHI_BUILD_VERSION')
+[Setup]
+AppId={{53D0CC26-0CE9-44AA-A4CF-4FD3C19AACAE}
+AppName=KemoMichi
+AppVersion={#AppVersion}
+DefaultDirName={localappdata}\Programs\KemoMichi
+DefaultGroupName=KemoMichi
+PrivilegesRequired=lowest
+ArchitecturesAllowed=x64compatible
+ArchitecturesInstallIn64BitMode=x64compatible
+OutputDir=..\..\dist\installers
+OutputBaseFilename=KemoMichi-Windows-x86_64-setup
+SetupIconFile=KemoMichi.ico
+UninstallDisplayIcon={app}\KemoMichi.exe
+Compression=lzma2
+SolidCompression=yes
+WizardStyle=modern
+[Languages]
+Name: "japanese"; MessagesFile: "compiler:Languages\Japanese.isl"
+Name: "english"; MessagesFile: "compiler:Default.isl"
+[Tasks]
+Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; Flags: unchecked
+[Files]
+Source: "..\..\dist\KemoMichi\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+[Icons]
+Name: "{group}\KemoMichi"; Filename: "{app}\KemoMichi.exe"
+Name: "{autodesktop}\KemoMichi"; Filename: "{app}\KemoMichi.exe"; Tasks: desktopicon
+[Run]
+Filename: "{app}\KemoMichi.exe"; Description: "KemoMichi"; Flags: nowait postinstall skipifsilent
+''', encoding="utf-8")
+    return spec, installer
+
+
 def prepare_resources(destination: Path):
     destination.mkdir(parents=True, exist_ok=True)
     image = Image.new("RGBA", (1024, 1024))
@@ -101,6 +167,7 @@ def main():
     if not (ROOT / "src/kemoserver/static/index.html").is_file():
         raise SystemExit("Build the web UI first.")
     prepared = ROOT / "build/desktop-resources"
+    spec, installer = prepare_build_files(prepared)
     tools = prepare_resources(prepared)
     from license_audit import audit
     (prepared / "licenses/dependency-audit.json").write_text(json.dumps(audit(ROOT), indent=2), encoding="utf-8")
@@ -115,7 +182,7 @@ def main():
            "PYINSTALLER_CONFIG_DIR": str(ROOT / "build/pyinstaller-cache")}
     subprocess.run([sys.executable, "-m", "PyInstaller", "--noconfirm", "--clean",
                     "--distpath", str(ROOT / "dist"), "--workpath", str(ROOT / "build/pyinstaller"),
-                    str(ROOT / "desktop/KemoMichi.spec")], cwd=ROOT, env=env, check=True)
+                    str(spec)], cwd=ROOT, env=env, check=True)
     if args.bundle_only:
         return
     installers = ROOT / "dist/installers"
@@ -137,7 +204,7 @@ def main():
     else:
         compiler = shutil.which("ISCC") or str(Path(os.environ.get("ProgramFiles(x86)", "C:/Program Files (x86)"))
                                                 / "Inno Setup 6/ISCC.exe")
-        subprocess.run([compiler, str(ROOT / "desktop/windows.iss")], cwd=ROOT, env=env, check=True)
+        subprocess.run([compiler, str(installer)], cwd=ROOT, env=env, check=True)
         shutil.make_archive(str(installers / "KemoMichi-Windows-x86_64-portable"), "zip",
                             root_dir=ROOT / "dist", base_dir="KemoMichi")
     manifest = {"version": __version__, "system": platform.system(), "architecture": platform.machine(),
