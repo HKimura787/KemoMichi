@@ -244,22 +244,22 @@ def create_app(config: ServerConfig) -> FastAPI:
     def folders():
         return project().folders()
 
-    def list_filter(text: str | None) -> dict:
+    def list_filter(text: str | None, records: bool = False) -> dict:
         """The UI's filter, without the rows KemoMichi duplicated for events: one stop per file."""
         flt = parse_filter(text)
-        if not flt.get("ids"):
+        if not records and not flt.get("ids"):
             flt["excludeIds"] = list(ws.sidecar.all_duplicates())
         return flt
 
     @app.get("/api/files")
-    def files(filter: str | None = None, offset: int = 0, limit: int = 200):
-        flt = list_filter(filter)
+    def files(filter: str | None = None, offset: int = 0, limit: int = 200, records: bool = False):
+        flt = list_filter(filter, records)
         p = project()
         return {"total": p.count(flt), "offset": offset, "rows": p.files(flt, offset, min(limit, 2000))}
 
     @app.get("/api/files/ids")
-    def file_ids(filter: str | None = None):
-        return project().ids(list_filter(filter))
+    def file_ids(filter: str | None = None, records: bool = False):
+        return project().ids(list_filter(filter, records))
 
     @app.get("/api/files/{file_id}")
     def file_detail(file_id: int):

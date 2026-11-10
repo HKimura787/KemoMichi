@@ -37,6 +37,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const [selection, setSelection] = useState<Set<number>>(new Set());
   const anchor = useRef<number | null>(null);
   const [view, setView] = useState<"viewer" | "grid" | "table">(resume.current?.view ?? "viewer");
+  const allRecords = view === "table";
   const [detail, setDetail] = useState<FileDetail | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [videoInfoId, setVideoInfoId] = useState<number | null>(null);
@@ -174,7 +175,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
 
   const reloadIds = useCallback(async (keep?: number | null) => {
     try {
-      const list = await api.ids(filter);
+      const list = await api.ids(filter, allRecords);
       setIds(list);
       const at = keep != null ? list.indexOf(keep) : -1;
       setIndex(at >= 0 ? at : 0);
@@ -182,9 +183,14 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     } catch (e) {
       toast.error(e);
     }
-  }, [filter, toast.error]);
+  }, [filter, allRecords, toast.error]);
 
-  useEffect(() => { reloadIds(currentId ?? resume.current?.fileId); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [filter]);
+  useEffect(() => {
+    const requested = currentId ?? resume.current?.fileId;
+    const keep = !allRecords && requested != null ? duplicates[String(requested)] ?? requested : requested;
+    reloadIds(keep);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [filter, allRecords]);
 
   useEffect(() => {
     if (!ids.length) return;
@@ -309,7 +315,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     try {
       const res = await api.duplicateFile(detail.id);
       toast.push("success", t("data.duplicated"));
-      const newIds = await api.ids(filter);
+      const newIds = await api.ids(filter, allRecords);
       setIds(newIds);
       rowsRef.current.set(res.row.id, res.row);
       setRowsVersion((v) => v + 1);

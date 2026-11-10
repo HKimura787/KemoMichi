@@ -57,7 +57,7 @@ export const api = {
     request<{ id: string }>("POST", "/api/project/create", { folder, template, demo, draft }),
   job: (id: string) => request<{ status: string; done: number; total: number; error: any; result: any }>(
     "GET", `/api/jobs/${id}`),
-  ids: (filter: Filter) => request<number[]>("GET", `/api/files/ids?filter=${q(filter)}`),
+  ids: (filter: Filter, records = false) => request<number[]>("GET", `/api/files/ids?filter=${q(filter)}&records=${records}`),
   files: (filter: Filter, offset: number, limit: number) =>
     request<{ total: number; rows: Row[] }>("GET", `/api/files?filter=${q(filter)}&offset=${offset}&limit=${limit}`),
   rowsByIds: (ids: number[]) =>

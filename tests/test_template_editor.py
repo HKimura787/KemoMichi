@@ -210,6 +210,7 @@ def test_source_in_image_folder_gets_an_independent_template_and_ddb(editor):
     assert job["status"] == "done", job
     assert (root / "調査_project.ddb").exists() and (root / "調査_project.tdb").exists()
     assert local_source.read_bytes() == original
+    assert client.get("/api/project").json()["templatePath"] == str(root / "調査_project.tdb")
 
 
 def test_source_change_in_wal_is_detected_before_creation(editor):

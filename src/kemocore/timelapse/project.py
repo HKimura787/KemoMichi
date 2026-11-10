@@ -585,7 +585,7 @@ class TimelapseProject:
         return added
 
     def find_template(self) -> Path | None:
-        """The .tdb next to this .ddb whose data labels match, if exactly one does."""
+        """Prefer the matching same-name .tdb; otherwise require one unambiguous match."""
         mine = {c.data_label for c in self.controls}
         matches = []
         for candidate in self.root.glob("*.tdb"):
@@ -596,6 +596,8 @@ class TimelapseProject:
             except sqlite3.DatabaseError:
                 continue
             if labels == mine:
+                if candidate == self.path.with_suffix(".tdb"):
+                    return candidate
                 matches.append(candidate)
         return matches[0] if len(matches) == 1 else None
 
