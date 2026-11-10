@@ -7,7 +7,8 @@ import type { Row } from "../types";
 const TILE = 200;
 const GAP = 8;
 
-export function Grid({ ids, rows, need, selection, currentId, onPick, onOpen, speciesLabels }: {
+export function Grid({ mediaSession, ids, rows, need, selection, currentId, onPick, onOpen, speciesLabels }: {
+  mediaSession: string;
   ids: number[];
   rows: Map<number, Row>;
   need: (ids: number[]) => void;
@@ -71,7 +72,7 @@ export function Grid({ ids, rows, need, selection, currentId, onPick, onOpen, sp
                      style={{ width: tile, height: Math.round(tile * 0.75) }}
                      title={row ? `${row.values.RelativePath}\\${row.values.File}  ${row.values.DateTime}` : ""}
                      onClick={(e) => onPick(id, index, e)} onDoubleClick={() => onOpen(index)}>
-                  <img src={mediaUrl(id, "thumb")} alt={row?.values.File ?? ""} loading="lazy" draggable={false} />
+                  <img src={mediaUrl(id, "thumb", mediaSession)} alt={row?.values.File ?? ""} loading="lazy" draggable={false} />
                   {selected && <span className="badge">{order}</span>}
                   {deleted && <span className="del">{t("grid.deleted")}</span>}
                   {isVideo && <span className="video">▶</span>}

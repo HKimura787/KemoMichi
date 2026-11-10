@@ -150,6 +150,7 @@
 | `Classifications` | 古い形式の認識結果（読み込み時に `Detections` へ統合される） |
 
 既定のファイル名は `TimelapseData.ddb` と `TimelapseTemplate.tdb`。
+KemoMichi での新規作成時は、テンプレートと同じ名前の `.ddb` にする（例: `調査.tdb` → `調査.ddb`）。
 
 ### 2.2 `DataTable`
 

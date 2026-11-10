@@ -58,11 +58,11 @@ def _import_recognitions(args) -> None:
 
 
 def _new(args) -> None:
-    from kemocore.timelapse import constants as C
     from kemocore.timelapse.create import create_data_file
 
     folder = Path(args.folder).resolve()
-    count = create_data_file(folder / C.DEFAULT_DDB_NAME, Path(args.template))
+    template = Path(args.template)
+    count = create_data_file(folder / template.with_suffix(".ddb").name, template)
     print(f"{count} files")
 
 
@@ -93,7 +93,7 @@ def main(argv: list[str] | None = None) -> None:
     rec.add_argument("json")
     rec.set_defaults(func=_import_recognitions)
 
-    new = sub.add_parser("new", help="create TimelapseData.ddb in a folder from a template")
+    new = sub.add_parser("new", help="create a .ddb in a folder with the same name as the template")
     new.add_argument("folder")
     new.add_argument("--template", required=True)
     new.set_defaults(func=_new)

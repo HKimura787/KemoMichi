@@ -95,6 +95,6 @@ def create_demo_project(root: Path) -> Path:
     make_demo_media(root)
     template = root / C.DEFAULT_TDB_NAME
     create_template(template, demo_controls())
-    ddb = root / C.DEFAULT_DDB_NAME
+    ddb = template.with_suffix(".ddb")
     create_data_file(ddb, template)
     return ddb

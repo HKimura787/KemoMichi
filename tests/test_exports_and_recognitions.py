@@ -117,7 +117,7 @@ def test_sidecar_folder_settings_inherit(demo):
     sidecar.set_folder("CamA", "guides", [{"shape": "triangle"}])
     assert sidecar.get_folder("CamA\\2026-04", "guides") == [{"shape": "triangle"}]
     assert sidecar.get_folder("CamB\\2026-04", "guides") is None
-    assert sidecar.path.name == "TimelapseData.ddb.kemomichi"
+    assert sidecar.path.name == f"{demo.name}.kemomichi"
 
 
 def test_read_only_sidecar_creates_nothing(demo):

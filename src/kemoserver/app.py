@@ -138,7 +138,7 @@ def create_app(config: ServerConfig) -> FastAPI:
         if not template:
             raise HTTPException(400, detail={"error": "error.templateRequired"})
         template_path = checked_path(template)
-        ddb = root / C.DEFAULT_DDB_NAME
+        ddb = root / template_path.with_suffix(".ddb").name
         if ddb.exists():
             raise HTTPException(409, detail={"error": "error.ddbExists", "params": {"path": str(ddb)}})
 

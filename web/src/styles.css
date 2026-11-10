@@ -191,6 +191,7 @@ table.plain td { border-bottom: 1px solid var(--km-divider); padding: 4px 8px; }
 /* Open screen */
 .open { max-width: 960px; margin: 0 auto; padding: 24px 16px; display: flex; flex-direction: column; gap: 16px; }
 .open h1 { font-size: 22px; margin: 0; }
+.open-controls { min-width: 0; margin: 0; padding: 0; border: none; display: flex; flex-direction: column; gap: 16px; }
 .browser { display: grid; grid-template-columns: 200px 1fr; gap: 16px; }
 .browser .places button { display: block; width: 100%; text-align: left; padding: 6px 8px; border: none; background: transparent; border-radius: 8px; cursor: pointer; }
 .browser .places button:hover { background: var(--km-surface); }

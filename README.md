@@ -12,7 +12,7 @@ Timelapse2 互換の、クロスプラットフォーム対応カメラトラッ
 ```bash
 uv sync
 uv run kemo demo ~/kemomichi-demo
-uv run kemo serve ~/kemomichi-demo/TimelapseData.ddb
+uv run kemo serve ~/kemomichi-demo/TimelapseTemplate.ddb
 ```
 
 pip でも使えます（`pip install -e .` の後、`kemo ...`）。

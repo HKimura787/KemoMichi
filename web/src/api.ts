@@ -72,5 +72,8 @@ export const api = {
 const canPlayH264 = typeof document !== "undefined" &&
   document.createElement("video").canPlayType('video/mp4; codecs="avc1.42E01E"') !== "";
 
-export const mediaUrl = (id: number, kind: "thumb" | "preview" | "original" | "video") =>
-  kind === "video" && !canPlayH264 ? `/api/media/${id}/video?format=webm` : `/api/media/${id}/${kind}`;
+export const mediaUrl = (id: number, kind: "thumb" | "preview" | "original" | "video", session: string) => {
+  const params = new URLSearchParams({ session });
+  if (kind === "video" && !canPlayH264) params.set("format", "webm");
+  return `/api/media/${id}/${kind}?${params}`;
+};

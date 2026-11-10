@@ -17,10 +17,12 @@ export interface ViewerHandle {
   seekFrame: (frame: number) => void;
   step: (delta: number) => void;
   togglePlay: () => void;
+  pause: () => void;
   fit: () => void;
 }
 
 interface Props {
+  mediaSession: string;
   detail: FileDetail | null;
   missingPath: string;
   color: ColorAdjust;
@@ -123,6 +125,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
 
   useImperativeHandle(ref, () => ({
     currentFrame: () => frame,
+    pause: () => videoRef.current?.pause(),
     seekFrame,
     step: (delta) => {
       videoRef.current?.pause();
@@ -232,14 +235,14 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
         visibility: natural ? "visible" : "hidden",
       }}>
         {isVideo ? (
-          <video key={detail.id} ref={videoRef} src={mediaUrl(detail.id, "video")} preload="auto" muted
+          <video key={detail.id} ref={videoRef} src={mediaUrl(detail.id, "video", props.mediaSession)} preload="auto" muted
                  style={{ filter }} playsInline
                  onLoadedMetadata={(e) => {
                    const v = e.currentTarget;
                    setNatural({ w: v.videoWidth, h: v.videoHeight });
                  }} />
         ) : (
-          <img key={detail.id} src={mediaUrl(detail.id, "preview")} alt={detail.values.File} draggable={false}
+          <img key={detail.id} src={mediaUrl(detail.id, "preview", props.mediaSession)} alt={detail.values.File} draggable={false}
                style={{ filter }}
                onLoad={(e) => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />
         )}

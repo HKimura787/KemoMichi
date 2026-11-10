@@ -70,7 +70,7 @@ def test_update_validates_normalizes_and_undoes(demo):
 def test_first_write_makes_a_timelapse_style_backup(demo):
     project = TimelapseProject(demo)
     project.update([1], {"Note": "hello"})
-    backups = list((demo.parent / "Backups").glob("TimelapseData.*.ddb"))
+    backups = list((demo.parent / "Backups").glob(f"{demo.stem}.*.ddb"))
     assert len(backups) == 1
     assert backups[0].name.count(".") == 3  # name.yyyy-MM-dd.HH-mm-ss.ddb
 

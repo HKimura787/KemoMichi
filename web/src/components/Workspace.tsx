@@ -12,12 +12,14 @@ import { NEUTRAL_COLOR, Timeline, Viewer, type ViewerHandle } from "./Viewer";
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable);
 
-export function Workspace({ info, project, setProject, onLeave }: {
-  info: Info; project: Project; setProject: (p: Project) => void; onLeave: () => void;
+export function Workspace({ info, project, setProject, active, onOpenProject }: {
+  info: Info; project: Project; setProject: (p: Project) => void; active: boolean; onOpenProject: () => void;
 }) {
   const { t, lang, setLang } = useI18n();
   const toast = useToast();
   const viewerRef = useRef<ViewerHandle>(null);
+  // File IDs repeat across projects; keep cached media local to this opened project.
+  const [mediaSession] = useState(() => crypto.randomUUID?.() ?? `${Date.now()}-${Math.random()}`);
 
   const [filter, setFilter] = useState<Filter>({});
   const [ids, setIds] = useState<number[]>([]);
@@ -44,6 +46,13 @@ export function Workspace({ info, project, setProject, onLeave }: {
   const [palette, setPalette] = useState<Palette>(project.settings.palette ?? { items: [], single: false });
   const [canUndo, setCanUndo] = useState(project.canUndo);
   const [canRedo, setCanRedo] = useState(project.canRedo);
+
+  useEffect(() => {
+    if (!active) {
+      viewerRef.current?.pause();
+      setCompare(false);
+    }
+  }, [active]);
 
   const controls = project.controls;
   const locked = useMemo(() => new Set(project.lockedColumns), [project.lockedColumns]);
@@ -263,6 +272,7 @@ export function Workspace({ info, project, setProject, onLeave }: {
   };
 
   useEffect(() => {
+    if (!active) return;
     const onKey = (e: KeyboardEvent) => {
       if (dialog || isTyping(e.target)) return;
       const mod = e.ctrlKey || e.metaKey;
@@ -382,7 +392,7 @@ export function Workspace({ info, project, setProject, onLeave }: {
         </button>
         {menuOpen && (
           <div className="menu" role="menu" onMouseLeave={() => setMenuOpen(false)}>
-            <button role="menuitem" onClick={() => { setMenuOpen(false); onLeave(); }}>{t("menu.open")}</button>
+            <button role="menuitem" disabled={saving > 0} onClick={() => { setMenuOpen(false); onOpenProject(); }}>{t("menu.open")}</button>
             <button role="menuitem" disabled={project.readOnly} onClick={() => { setMenuOpen(false); setDialog("recognitions"); }}>{t("menu.importRecognitions")}</button>
             <button role="menuitem" onClick={async () => {
               setMenuOpen(false);
@@ -469,11 +479,11 @@ export function Workspace({ info, project, setProject, onLeave }: {
             {currentRow && <span className="pos" title={currentRow.values.RelativePath}>{currentRow.values.File} · {currentRow.values.DateTime}</span>}
           </div>
           {view === "grid" ? (
-            <Grid ids={ids} rows={rowsRef.current} need={need} selection={selection} currentId={currentId}
+            <Grid mediaSession={mediaSession} ids={ids} rows={rowsRef.current} need={need} selection={selection} currentId={currentId}
                   onPick={pick} onOpen={(at) => { setIndex(at); setView("viewer"); }} speciesLabels={speciesLabels} />
           ) : (
             <>
-              <Viewer ref={viewerRef} detail={detail}
+              <Viewer ref={viewerRef} mediaSession={mediaSession} detail={detail}
                       missingPath={currentRow ? `${currentRow.values.RelativePath}\\${currentRow.values.File}` : ""}
                       color={color} compare={compare}
                       guides={folderGuides.guides} showGuides={showGuides}
