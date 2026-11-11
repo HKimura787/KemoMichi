@@ -70,6 +70,21 @@ jobs:
           $process = Start-Process -FilePath $app -ArgumentList @('--smoke-test', '--state-dir', "$env:RUNNER_TEMP\kemo-check", '--report', $report) -Wait -PassThru
           Get-Content $report
           if ($process.ExitCode -ne 0) { throw 'Packaged smoke test failed' }
+      - name: Verify Windows launcher window starts and exits
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $app = "$PWD\dist\KemoMichi\KemoMichi.exe"
+          $env:PATH = "$env:SystemRoot\System32;$env:SystemRoot"
+          $report = "$env:RUNNER_TEMP\window-smoke.json"
+          $process = Start-Process -FilePath $app -ArgumentList @('--smoke-test-window', '--state-dir', "$env:RUNNER_TEMP\kemo-window-check", '--report', $report) -PassThru
+          if (!$process.WaitForExit(60000)) {
+            $process.Kill()
+            Get-Content "$env:RUNNER_TEMP\kemo-window-check\launcher.log" -ErrorAction SilentlyContinue
+            throw 'Launcher window did not exit within 60 seconds'
+          }
+          Get-Content $report
+          if ($process.ExitCode -ne 0 -or !(Test-Path $report)) { throw 'Launcher window smoke test failed' }
       - uses: actions/upload-artifact@v4
         with:
           name: KemoMichi-${{ matrix.label }}

@@ -149,8 +149,8 @@ input[readonly] { background: var(--km-ground); border-color: var(--km-divider);
 .sp[aria-pressed="true"]::before { content: ""; position: absolute; left: 7px; top: 10px; width: 7px; height: 7px; background: #fff; }
 .sp[aria-pressed="true"] kbd { color: var(--km-text); }
 .sp:disabled { cursor: not-allowed; opacity: 0.6; }
-.counts { display: flex; flex-direction: column; gap: 6px; }
-.count-row { display: grid; grid-template-columns: 1fr 64px 36px 36px; gap: 4px; align-items: center; }
+.counter-input { display: flex; gap: 4px; align-items: center; }
+.counter-input input { flex: 1; min-width: 0; }
 
 .section-title { font-weight: 700; font-size: 16px; color: var(--km-primary); margin-top: 6px; display: flex; align-items: baseline; gap: 8px; }
 .section-title .sub { font-weight: 400; color: var(--km-text-sub); font-size: 14px; }

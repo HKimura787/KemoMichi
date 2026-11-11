@@ -22,6 +22,8 @@ import webbrowser
 import uvicorn
 from starlette.responses import JSONResponse, RedirectResponse, Response
 
+from kemocore.runtime import ToolProcesses, tool_processes
+
 from .app import create_app
 from .security import ServerConfig
 
@@ -136,6 +138,8 @@ class DesktopServer:
         self.token = secrets.token_urlsafe(32)
         self.url = ""
         self.server = self.thread = self.socket = self.app = None
+        self.stopping = threading.Event()
+        self.tools = ToolProcesses()
 
     def start(self):
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
@@ -144,31 +148,52 @@ class DesktopServer:
         self.url = f"http://127.0.0.1:{port}/_desktop/launch?token={self.token}"
         self.app = create_app(ServerConfig(port=port))
         wrapped = DesktopSession(self.app, port, self.token)
-        config = uvicorn.Config(wrapped, host="127.0.0.1", port=port, loop="asyncio", http="h11",
-                                ws="none", log_config=None, access_log=False, proxy_headers=False)
+
+        async def session_app(scope, receive, send):
+            with tool_processes(self.tools):
+                await wrapped(scope, receive, send)
+
+        config = uvicorn.Config(session_app, host="127.0.0.1", port=port, loop="asyncio", http="h11",
+                                ws="none", log_config=None, access_log=False, proxy_headers=False,
+                                timeout_graceful_shutdown=3)
         self.server = uvicorn.Server(config)
         self.thread = threading.Thread(target=self.server.run, kwargs={"sockets": [self.socket]}, daemon=True)
+        if self.stopping.is_set():
+            self.stop()
+            raise RuntimeError("起動を中止しました。")
         self.thread.start()
         deadline = time.monotonic() + 20
         while not self.server.started:
-            if not self.thread.is_alive() or time.monotonic() > deadline:
+            if self.stopping.is_set() or not self.thread.is_alive() or time.monotonic() > deadline:
                 self.stop()
                 raise RuntimeError("ローカルの作業画面を起動できませんでした。")
             time.sleep(0.05)
+        if self.stopping.is_set():
+            self.stop()
+            raise RuntimeError("起動を中止しました。")
         state = self.directory / "desktop.json"
         state.write_text(json.dumps({"url": self.url}), encoding="utf-8")
         state.chmod(0o600)
 
-    def stop(self):
+    def request_stop(self):
+        self.stopping.set()
+        self.tools.cancel()
+        if self.app:
+            self.app.state.jobs.stopping.set()
         if self.server:
             self.server.should_exit = True
+
+    def stop(self, timeout: float = 10):
+        self.request_stop()
+        deadline = time.monotonic() + timeout
         if self.thread and self.thread.is_alive():
-            self.thread.join()
+            self.thread.join(max(0, deadline - time.monotonic()))
+            if self.thread.is_alive():
+                raise RuntimeError("通信処理の終了に時間がかかっています。少し待って終了を再試行してください。")
         if self.app:
-            # Project creation runs outside HTTP requests; let it finish before closing SQLite.
-            jobs = self.app.state.jobs
-            while any(job.status == "running" for job in list(jobs.jobs.values())):
-                time.sleep(0.1)
+            # Cancel creation cooperatively and let SQLite roll back before closing the workspace.
+            if not self.app.state.jobs.wait(max(0, deadline - time.monotonic())):
+                raise RuntimeError("ファイル処理の終了に時間がかかっています。少し待って終了を再試行してください。")
             self.app.state.workspace.close()
         if self.socket:
             self.socket.close()
@@ -197,7 +222,7 @@ def open_folder(path: Path):
         subprocess.Popen(["open" if sys.platform == "darwin" else "xdg-open", str(path)])
 
 
-def run_window(server: DesktopServer):
+def run_window(server: DesktopServer, *, auto_close: bool = False):
     import tkinter as tk
     from tkinter import ttk
 
@@ -217,6 +242,8 @@ def run_window(server: DesktopServer):
     exit_button.pack(side="left")
     ttk.Button(frame, text="ログフォルダを開く", command=lambda: open_folder(server.directory)).pack(anchor="w")
     failure: list[str] = []
+    stop_failure: list[str] = []
+    browser_failure: list[str] = []
     ready = threading.Event()
     stopped = threading.Event()
     closing = False
@@ -239,13 +266,26 @@ def run_window(server: DesktopServer):
             ready.set()
 
     def stop():
-        ready.wait()
-        server.stop()
-        stopped.set()
+        try:
+            server.request_stop()
+            if not ready.wait(timeout=25):
+                raise RuntimeError("起動処理の停止に時間がかかっています。終了を再試行してください。")
+            server.stop()
+        except Exception as exc:
+            log.exception("Shutdown failed")
+            stop_failure.append(str(exc))
+        finally:
+            stopped.set()
 
     def browser():
-        if not webbrowser.open(server.url):
-            status.set("ブラウザが開かない場合は、既定のブラウザを設定してからもう一度お試しください。")
+        def open_browser():
+            try:
+                if not webbrowser.open(server.url):
+                    raise RuntimeError("既定のブラウザを設定してからもう一度お試しください。")
+            except Exception as exc:
+                log.exception("Could not open browser")
+                browser_failure.append(str(exc))
+        threading.Thread(target=open_browser, daemon=True).start()
 
     def close():
         nonlocal closing
@@ -258,17 +298,33 @@ def run_window(server: DesktopServer):
         threading.Thread(target=stop, daemon=True).start()
 
     def poll():
+        nonlocal closing
         if stopped.is_set():
-            window.destroy()
-            return
+            if stop_failure:
+                status.set(f"終了できませんでした。{stop_failure.pop()} ログフォルダをご確認ください。")
+                stopped.clear()
+                closing = False
+                exit_button.configure(state="normal", text="終了を再試行")
+                if ready.is_set() and not failure:
+                    opened.configure(state="normal")
+            else:
+                window.destroy()
+                return
         if ready.is_set() and opened.instate(["disabled"]) and not closing:
             if failure:
                 status.set(f"起動できませんでした。{failure[0]} ログフォルダをご確認ください。")
+                if auto_close:
+                    close()
             else:
                 status.set("作業画面を開きました。終了するときは、このウィンドウの「終了」を押してください。")
                 opened.configure(state="normal")
                 opened.focus_set()
-                browser()
+                if auto_close:
+                    close()
+                else:
+                    browser()
+        if browser_failure and not closing:
+            status.set(f"ブラウザを開けませんでした。{browser_failure.pop()}")
         window.after(150, poll)
 
     opened.configure(command=browser)
@@ -284,8 +340,11 @@ def run_window(server: DesktopServer):
     try:
         window.mainloop()
     finally:
-        ready.wait()
-        server.stop()
+        server.request_stop()
+        if ready.wait(timeout=25):
+            server.stop()
+    if auto_close and failure:
+        raise RuntimeError(failure[0])
 
 
 def smoke_test(directory: Path) -> dict:
@@ -331,6 +390,7 @@ def main(argv=None):
     parser = argparse.ArgumentParser(description="KemoMichi browser launcher")
     parser.add_argument("--state-dir", type=Path, default=application_dir())
     parser.add_argument("--smoke-test", action="store_true")
+    parser.add_argument("--smoke-test-window", action="store_true", help=argparse.SUPPRESS)
     parser.add_argument("--report", type=Path)
     args = parser.parse_args(argv)
     directory = args.state_dir.resolve()
@@ -362,6 +422,10 @@ def main(argv=None):
                 print(json.dumps(result, ensure_ascii=False))
             if not result["ok"]:
                 raise SystemExit(1)
+        elif args.smoke_test_window:
+            run_window(DesktopServer(directory), auto_close=True)
+            if args.report:
+                args.report.write_text(json.dumps({"ok": True, "windowClosed": True}), encoding="utf-8")
         else:
             run_window(DesktopServer(directory))
     finally:

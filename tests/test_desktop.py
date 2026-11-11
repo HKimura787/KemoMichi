@@ -80,3 +80,102 @@ def test_bundled_ffmpeg_is_used_without_path(tmp_path, monkeypatch):
     monkeypatch.setenv("PATH", "")
     for name in ("ffmpeg", "ffprobe"):
         assert Path(tool_path(name)).parent == folder
+
+
+def test_shutdown_cancels_video_process_in_http_worker(tmp_path, monkeypatch):
+    import threading
+    from kemoserver import desktop
+    from kemocore import runtime
+
+    entered = threading.Event()
+    cancelled = threading.Event()
+    original_create = desktop.create_app
+
+    def app_with_slow_video(config):
+        app = original_create(config)
+
+        @app.get('/test-slow-video')
+        def slow_video():
+            entered.set()
+            try:
+                runtime.run_tool('ffmpeg', ['-c', 'import time; time.sleep(600)'], capture_output=True)
+            except InterruptedError:
+                cancelled.set()
+            return {'cancelled': cancelled.is_set()}
+        # StaticFiles is mounted at '/', so the test endpoint must precede it.
+        app.router.routes.insert(0, app.router.routes.pop())
+        return app
+
+    monkeypatch.setattr(desktop, 'create_app', app_with_slow_video)
+    monkeypatch.setattr(runtime, 'tool_path', lambda name: sys.executable)
+    server = DesktopServer(tmp_path)
+    server.start()
+    client = local_opener()
+    with client.open(server.url) as response:
+        response.read()
+    result = []
+
+    def request_video():
+        with client.open(server.url.split('/_desktop/')[0] + '/test-slow-video', timeout=15) as response:
+            result.append(json.load(response))
+
+    request = threading.Thread(target=request_video, daemon=True)
+    request.start()
+    try:
+        assert entered.wait(3)
+        server.stop()
+        request.join(3)
+        assert not request.is_alive()
+        assert result == [{'cancelled': True}]
+        assert not server.thread.is_alive()
+        assert not server.tools.processes
+    finally:
+        server.stop()
+
+
+def test_shutdown_timeout_does_not_close_database_under_running_requests(tmp_path):
+    from types import SimpleNamespace
+    from unittest.mock import Mock
+
+    server = DesktopServer(tmp_path)
+    server.thread = Mock()
+    server.thread.is_alive.return_value = True
+    workspace = Mock()
+    server.app = SimpleNamespace(state=SimpleNamespace(workspace=workspace, jobs=SimpleNamespace(stopping=Mock())))
+    with pytest.raises(RuntimeError, match='通信処理'):
+        server.stop(timeout=0)
+    workspace.close.assert_not_called()
+    server.thread.join.assert_called_once_with(0)
+
+
+def test_shutdown_cancels_project_creation_and_rolls_back_partial_ddb(tmp_path, monkeypatch):
+    import threading
+    from kemocore.timelapse import create
+    from kemocore.demo import make_image
+    from kemoserver.workspace import Jobs
+
+    source = tmp_path / 'survey.tdb'
+    target = source.with_suffix('.ddb')
+    create.create_template(source)
+    for i in range(3):
+        make_image(tmp_path / f'{i}.jpg', None, 'test')
+    entered, release = threading.Event(), threading.Event()
+    original_datetime = create.file_datetime
+
+    def slow_datetime(path):
+        entered.set()
+        assert release.wait(3)
+        return original_datetime(path)
+
+    monkeypatch.setattr(create, 'file_datetime', slow_datetime)
+    jobs = Jobs()
+    job = jobs.start('create', lambda progress: create.create_data_file(target, source, progress))
+    try:
+        assert entered.wait(3)
+        jobs.stopping.set()
+    finally:
+        release.set()
+        assert jobs.wait(3)
+    assert job.status == 'failed'
+    assert not target.exists()
+    assert source.is_file()
