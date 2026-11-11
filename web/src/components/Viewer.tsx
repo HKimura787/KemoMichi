@@ -17,10 +17,16 @@ export interface ViewerHandle {
   seekFrame: (frame: number) => void;
   step: (delta: number) => void;
   togglePlay: () => void;
+  pause: () => void;
   fit: () => void;
+  capture: () => Promise<string | null>;
+  isPlaying: () => boolean;
 }
 
 interface Props {
+  mediaSession: string;
+  initialFrame?: number;
+  onPositionCommit?: () => void;
   detail: FileDetail | null;
   missingPath: string;
   color: ColorAdjust;
@@ -34,6 +40,7 @@ interface Props {
   drawing: ShapeKind | null;
   onDrawn: (shape: ShapeKind, points: [number, number][]) => void;
   videoInfo: VideoInfo | null;
+  playbackRate?: number;
   onFrame: (frame: number) => void;
 }
 
@@ -42,6 +49,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   const { detail, color, compare } = props;
   const stageRef = useRef<HTMLDivElement>(null);
   const videoRef = useRef<HTMLVideoElement>(null);
+  const imgRef = useRef<HTMLImageElement>(null);
   const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
   const [view, setView] = useState({ scale: 1, x: 0, y: 0 });
   const [draft, setDraft] = useState<[number, number][]>([]);
@@ -52,6 +60,7 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   const onFrameRef = useRef(props.onFrame);
   onFrameRef.current = props.onFrame;
   const frameTimes = props.videoInfo?.frameTimes ?? [];
+  const resumeApplied = useRef<number | null>(null);
 
   const fit = useCallback(() => {
     const stage = stageRef.current;
@@ -96,6 +105,12 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
   }, [frameTimes]);
 
   useEffect(() => {
+    if (!isVideo || !detail || !natural || !frameTimes.length || resumeApplied.current === detail.id) return;
+    resumeApplied.current = detail.id;
+    seekFrame(props.initialFrame ?? 0);
+  }, [isVideo, detail?.id, natural, frameTimes, props.initialFrame, seekFrame]);
+
+  useEffect(() => {
     const video = videoRef.current;
     if (!video || !isVideo) return;
     let handle = 0;
@@ -119,8 +134,15 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
     };
   }, [isVideo, frameAt, detail?.id]);
 
+  useEffect(() => {
+    if (videoRef.current && props.playbackRate) {
+      videoRef.current.playbackRate = props.playbackRate;
+    }
+  }, [props.playbackRate, detail?.id]);
+
   useImperativeHandle(ref, () => ({
     currentFrame: () => frame,
+    pause: () => videoRef.current?.pause(),
     seekFrame,
     step: (delta) => {
       videoRef.current?.pause();
@@ -132,7 +154,54 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
       if (v.paused) v.play(); else v.pause();
     },
     fit,
-  }), [frame, seekFrame, fit]);
+    isPlaying: () => {
+      const v = videoRef.current;
+      return !!(v && !v.paused && !v.ended && v.readyState > 1);
+    },
+    capture: async () => {
+      if (!natural) return null;
+      try {
+        const canvas = document.createElement("canvas");
+        canvas.width = natural.w;
+        canvas.height = natural.h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return null;
+
+        if (!compare) {
+          ctx.filter = `brightness(${color.brightness}) contrast(${color.contrast}) saturate(${color.saturation}) grayscale(${color.grayscale ? 1 : 0})`;
+        }
+
+        if (isVideo && videoRef.current) {
+          ctx.drawImage(videoRef.current, 0, 0, natural.w, natural.h);
+        } else if (imgRef.current) {
+          ctx.drawImage(imgRef.current, 0, 0, natural.w, natural.h);
+        } else {
+          return null;
+        }
+
+        if (!compare && color.gamma !== 1) {
+          const imgData = ctx.getImageData(0, 0, canvas.width, canvas.height);
+          const d = imgData.data;
+          const invGamma = 1 / color.gamma;
+          const lut = new Uint8Array(256);
+          for (let i = 0; i < 256; i++) {
+            lut[i] = Math.min(255, Math.max(0, Math.round(255 * Math.pow(i / 255, invGamma))));
+          }
+          for (let i = 0; i < d.length; i += 4) {
+            d[i] = lut[d[i]];
+            d[i + 1] = lut[d[i + 1]];
+            d[i + 2] = lut[d[i + 2]];
+          }
+          ctx.putImageData(imgData, 0, 0);
+        }
+
+        return canvas.toDataURL("image/jpeg", 0.95);
+      } catch (err) {
+        console.error("Frame capture error:", err);
+        return null;
+      }
+    },
+  }), [frame, seekFrame, fit, natural, isVideo, compare, color]);
 
   // ---- pan, zoom and drawing -----------------------------------------------------------
   const toImage = (e: { clientX: number; clientY: number }): [number, number] | null => {
@@ -230,14 +299,25 @@ export const Viewer = forwardRef<ViewerHandle, Props>(function Viewer(props, ref
         visibility: natural ? "visible" : "hidden",
       }}>
         {isVideo ? (
-          <video key={detail.id} ref={videoRef} src={mediaUrl(detail.id, "video")} preload="auto" muted
+          <video key={detail.id} ref={videoRef} src={mediaUrl(detail.id, "video", props.mediaSession)} preload="auto" muted
+                 onPause={() => {
+                   const video = videoRef.current;
+                   if (video && frameTimes.length) onFrameRef.current(frameAt(video.currentTime));
+                   props.onPositionCommit?.();
+                 }}
+                 crossOrigin="anonymous"
                  style={{ filter }} playsInline
                  onLoadedMetadata={(e) => {
                    const v = e.currentTarget;
+                   if (props.playbackRate) v.playbackRate = props.playbackRate;
                    setNatural({ w: v.videoWidth, h: v.videoHeight });
+                 }}
+                 onPlay={(e) => {
+                   if (props.playbackRate) e.currentTarget.playbackRate = props.playbackRate;
                  }} />
         ) : (
-          <img key={detail.id} src={mediaUrl(detail.id, "preview")} alt={detail.values.File} draggable={false}
+          <img key={detail.id} ref={imgRef} src={mediaUrl(detail.id, "preview", props.mediaSession)} alt={detail.values.File} draggable={false}
+               crossOrigin="anonymous"
                style={{ filter }}
                onLoad={(e) => setNatural({ w: e.currentTarget.naturalWidth, h: e.currentTarget.naturalHeight })} />
         )}
@@ -312,9 +392,14 @@ export function GuideShape({ guide, w, h, lw, dashed }: { guide: Guide; w: numbe
 /** A bar on the timeline: an event's part inside this video. `end` null means it is still open. */
 export interface Segment { key: number; start: number; end: number | null; label: string; carriedIn: boolean; carriedOut: boolean }
 
-export function Timeline({ frame, total, frameTimes, segments, onSeek, exact }: {
+export function Timeline({
+  frame, total, frameTimes, segments, onSeek, exact,
+  playbackRate, onPlaybackRateChange, isPlaying, onTogglePlay, onStep,
+}: {
   frame: number; total: number; frameTimes: number[]; segments: Segment[];
   onSeek: (frame: number) => void; exact: boolean;
+  playbackRate?: number; onPlaybackRateChange?: (rate: number) => void;
+  isPlaying?: boolean; onTogglePlay?: () => void; onStep?: (delta: number) => void;
 }) {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
@@ -339,10 +424,47 @@ export function Timeline({ frame, total, frameTimes, segments, onSeek, exact }: 
   const height = Math.max(1, laneEnds.length) * LANE + 6;
   return (
     <div className="timeline">
-      <div className="tc">
-        <span>{formatTimecode(seconds)}</span>
-        <span>{t("video.frame", { frame, total: Math.max(0, total - 1) })}</span>
-        {!exact && <span title={t("video.approx")}>≈</span>}
+      <div className="tc" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
+        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+          {onTogglePlay && (
+            <button type="button" className="icon-btn" onClick={onTogglePlay} title="Space: Play/Pause"
+                    style={{ minWidth: 28, height: 26, padding: "0 6px", background: "var(--km-surface)", color: "var(--km-primary)", border: "none", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}>
+              {isPlaying ? "⏸" : "▶"}
+            </button>
+          )}
+          {onStep && (
+            <>
+              <button type="button" className="icon-btn" onClick={() => onStep(-1)} title="<: -1 frame"
+                      style={{ height: 26, padding: "0 6px", background: "var(--km-surface)", color: "var(--km-primary)", border: "none", borderRadius: 4, cursor: "pointer" }}>◀</button>
+              <button type="button" className="icon-btn" onClick={() => onStep(1)} title=">: +1 frame"
+                      style={{ height: 26, padding: "0 6px", background: "var(--km-surface)", color: "var(--km-primary)", border: "none", borderRadius: 4, cursor: "pointer" }}>▶</button>
+            </>
+          )}
+          <span>{formatTimecode(seconds)}</span>
+          <span>{t("video.frame", { frame, total: Math.max(0, total - 1) })}</span>
+          {!exact && <span title={t("video.approx")}>≈</span>}
+        </div>
+        {onPlaybackRateChange && (
+          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
+            <span style={{ fontSize: 13, opacity: 0.85 }}>{t("video.speed")}:</span>
+            <div style={{ display: "flex", gap: 2 }}>
+              {[0.5, 1, 1.5, 2].map((r) => (
+                <button key={r} type="button" className="chip" aria-pressed={playbackRate === r}
+                        onClick={() => onPlaybackRateChange(r)}
+                        style={{ padding: "1px 6px", minHeight: 24, fontSize: 12 }}>
+                  {r}x
+                </button>
+              ))}
+            </div>
+            <select value={playbackRate ?? 1} onChange={(e) => onPlaybackRateChange(Number(e.target.value))}
+                    aria-label={t("video.speed")}
+                    style={{ width: 68, height: 24, padding: "0 2px", fontSize: 12, background: "var(--km-surface)", color: "var(--km-primary)", fontWeight: 700, borderRadius: 4, border: "none", cursor: "pointer" }}>
+              {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4].map((r) => (
+                <option key={r} value={r}>{r}x</option>
+              ))}
+            </select>
+          </div>
+        )}
       </div>
       <div className="track" ref={trackRef} style={{ height }}
            onMouseDown={(e) => {

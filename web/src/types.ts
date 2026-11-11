@@ -21,6 +21,24 @@ export interface Control {
   standard: boolean;
 }
 
+export interface TemplateDraft {
+  name: string;
+  revision: string;
+  controls: Control[];
+}
+
+export interface TemplatePreview {
+  path: string;
+  revision: string;
+  controls: Control[];
+  suggestedName: string;
+}
+
+export interface TemplateConfirmation extends TemplateDraft {
+  templatePath: string;
+  ddbPath: string;
+}
+
 export interface Row {
   id: number;
   values: Record<string, string>;
@@ -50,6 +68,13 @@ export interface EventColumns {
   continuityGap: number;
 }
 
+export interface ReviewPosition {
+  fileId: number;
+  frame: number;
+  filter: Filter;
+  view: "viewer" | "grid" | "table";
+}
+
 export interface Project {
   path: string;
   root: string;
@@ -61,7 +86,7 @@ export interface Project {
   controls: Control[];
   total: number;
   hasRecognitions: boolean;
-  settings: { palette?: Palette; bboxThreshold?: number; [key: string]: unknown };
+  settings: { palette?: Palette; bboxThreshold?: number; reviewPosition?: ReviewPosition; [key: string]: unknown };
   lockedColumns: string[];
   eventColumns: EventColumns;
   duplicates: Record<string, number>;
@@ -111,11 +136,14 @@ export interface RestEvent {
 export interface FileDetail extends Row {
   detections: Detection[];
   markers: Record<string, [number, number][]>;
+  fileRest?: { start_seconds: string; end_seconds: string; duration_seconds: string; interval_count: number } | null;
   events: RestEvent[];
   sameFileRows: number[];
   duplicateOf: number | null;
   kind: "image" | "video";
   exists: boolean;
+  recordIndex?: number;
+  recordTotal?: number;
 }
 
 export interface VideoInfo {

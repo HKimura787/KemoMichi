@@ -59,14 +59,18 @@ def create_template(path: Path, user_controls: list[Control] | None = None) -> l
     return controls
 
 
-def scan_media(root: Path) -> list[tuple[str, str]]:
+def scan_media(root: Path, progress=None) -> list[tuple[str, str]]:
     """(RelativePath with backslashes, File) for every image/video under root, sorted."""
     found = []
     for dirpath, dirnames, filenames in os.walk(root):
+        if progress:
+            progress(0, 0)  # Also allow cancellation while discovering a large HDD tree.
         dirnames[:] = sorted(d for d in dirnames if d not in C.SKIPPED_FOLDERS and not d.startswith("."))
         rel = Path(dirpath).relative_to(root)
         rel_text = "" if str(rel) == "." else "\\".join(rel.parts)
         for name in sorted(filenames):
+            if progress:
+                progress(0, 0)
             if Path(name).suffix.lower() in C.IMAGE_EXTENSIONS | C.VIDEO_EXTENSIONS:
                 found.append((rel_text, name))
     return found
@@ -102,7 +106,7 @@ def create_data_file(ddb_path: Path, template_path: Path, progress=None) -> int:
 
     from .template import control_from_row
     controls = [control_from_row(r) for r in template_rows]
-    media = scan_media(root)
+    media = scan_media(root, progress)
 
     conn = sqlite3.connect(ddb_path)
     try:
@@ -151,6 +155,8 @@ def create_data_file(ddb_path: Path, template_path: Path, progress=None) -> int:
             insert = (f"INSERT INTO {C.DATA_TABLE} ({', '.join(S.q(l) for l in labels)}) "
                       f"VALUES ({', '.join('?' for _ in labels)})")
             for index, (rel, name) in enumerate(media):
+                if progress:
+                    progress(index, len(media))
                 taken = file_datetime(root / Path(*rel.split("\\")) / name if rel else root / name)
                 values = []
                 for c in controls:
@@ -163,8 +169,6 @@ def create_data_file(ddb_path: Path, template_path: Path, progress=None) -> int:
                     else:
                         values.append(c.default_value or "")
                 conn.execute(insert, values)
-                if progress and index % 200 == 0:
-                    progress(index, len(media))
     except Exception:
         conn.close()
         ddb_path.unlink(missing_ok=True)

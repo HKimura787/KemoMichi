@@ -5,13 +5,12 @@ Nothing here is real survey data: images are flat colours with a label, species 
 
 from __future__ import annotations
 
-import shutil
-import subprocess
 from datetime import datetime, timedelta
 from pathlib import Path
 
 from PIL import Image, ImageDraw
 
+from .runtime import run_tool, tool_path
 from .timelapse import constants as C
 from .timelapse.create import create_data_file, create_template
 from .timelapse.template import Choices, Control
@@ -33,14 +32,14 @@ def make_image(path: Path, taken: datetime | None, text: str, colour=(90, 110, 8
 
 
 def make_video(path: Path, seconds: int = 3, rate: str = "30000/1001", codec: str = "libx264") -> bool:
-    if shutil.which("ffmpeg") is None:
+    if tool_path("ffmpeg") is None:
         return False
     path.parent.mkdir(parents=True, exist_ok=True)
-    args = ["ffmpeg", "-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size=640x360:rate={rate}",
+    args = ["-v", "error", "-y", "-f", "lavfi", "-i", f"testsrc2=size=640x360:rate={rate}",
             "-t", str(seconds), "-c:v", codec]
     if codec == "libx264":
         args += ["-pix_fmt", "yuv420p"]
-    result = subprocess.run(args + [str(path)], capture_output=True)
+    result = run_tool("ffmpeg", args + [str(path)], capture_output=True)
     return result.returncode == 0
 
 
@@ -101,7 +100,7 @@ def create_demo_project(root: Path) -> Path:
     make_demo_media(root)
     template = root / C.DEFAULT_TDB_NAME
     create_template(template, demo_controls())
-    ddb = root / C.DEFAULT_DDB_NAME
+    ddb = template.with_suffix(".ddb")
     create_data_file(ddb, template)
     # Ready to try: the species palette and where REST event results go.
     from .sidecar import Sidecar

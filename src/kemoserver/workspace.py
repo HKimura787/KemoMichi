@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import threading
+import time
 import traceback
 import uuid
+from contextvars import copy_context
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -53,26 +55,43 @@ class Job:
 class Jobs:
     def __init__(self):
         self.jobs: dict[str, Job] = {}
+        self.threads: list[threading.Thread] = []
+        self.stopping = threading.Event()
 
     def start(self, kind: str, work) -> Job:
+        if self.stopping.is_set():
+            raise RuntimeError("KemoMichi is shutting down")
         job = Job(id=uuid.uuid4().hex, kind=kind)
         self.jobs[job.id] = job
 
         def progress(done: int, total: int) -> None:
+            if self.stopping.is_set():
+                raise InterruptedError("Project creation cancelled: KemoMichi is shutting down")
             job.done, job.total = done, total
 
         def run():
             try:
+                progress(0, 0)
                 job.result = work(progress) or {}
                 job.status = "done"
             except Exception as exc:  # reported to the UI
                 key = getattr(exc, "key", "error.unexpected")
                 job.error = {"error": key, "params": getattr(exc, "params", {}), "detail": str(exc)}
                 job.status = "failed"
-                traceback.print_exc()
+                if not isinstance(exc, InterruptedError):
+                    traceback.print_exc()
 
-        threading.Thread(target=run, daemon=True).start()
+        thread = threading.Thread(target=copy_context().run, args=(run,), daemon=True)
+        self.threads = [worker for worker in self.threads if worker.is_alive()]
+        self.threads.append(thread)
+        thread.start()
         return job
+
+    def wait(self, timeout: float) -> bool:
+        deadline = time.monotonic() + timeout
+        for thread in self.threads:
+            thread.join(max(0, deadline - time.monotonic()))
+        return not any(thread.is_alive() for thread in self.threads)
 
     def get(self, job_id: str) -> Job | None:
         return self.jobs.get(job_id)
