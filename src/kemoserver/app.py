@@ -30,6 +30,8 @@ from .workspace import Jobs, Workspace
 
 STATIC_DIR = Path(__file__).parent / "static"
 
+MAX_CAPTURE_IMAGE_BYTES = 32 * 1024 * 1024  # 32 MiB, decoded size
+
 
 def create_app(config: ServerConfig) -> FastAPI:
     app = FastAPI(title="KemoMichi", version=__version__)
@@ -467,6 +469,24 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.post("/api/capture")
     def capture(data: dict = Body(...)):
         p = project()
+        p._ensure_writable()
+        raw_b64 = data.get("image") or ""
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+        if not raw_b64:
+            raise HTTPException(422, detail={"error": "error.badImage"})
+        # Base64 expands 3 bytes to 4 chars; reject oversized input before decoding it.
+        max_b64_len = ((MAX_CAPTURE_IMAGE_BYTES + 2) // 3) * 4
+        if len(raw_b64) > max_b64_len:
+            raise HTTPException(413, detail={"error": "error.imageTooLarge"})
+        try:
+            image_bytes = base64.b64decode(raw_b64, validate=True)
+        except ValueError:
+            raise HTTPException(422, detail={"error": "error.badImage"})
+        if not image_bytes:
+            raise HTTPException(422, detail={"error": "error.badImage"})
+        if len(image_bytes) > MAX_CAPTURE_IMAGE_BYTES:
+            raise HTTPException(413, detail={"error": "error.imageTooLarge"})
         captures_dir = p.root / "captures"
         captures_dir.mkdir(parents=True, exist_ok=True)
         filename = data.get("filename") or "capture.jpg"
@@ -480,10 +500,6 @@ def create_app(config: ServerConfig) -> FastAPI:
         while target.exists():
             target = captures_dir / f"{stem}_{counter}{suffix}"
             counter += 1
-        raw_b64 = data.get("image", "")
-        if "," in raw_b64:
-            raw_b64 = raw_b64.split(",", 1)[1]
-        image_bytes = base64.b64decode(raw_b64)
         target.write_bytes(image_bytes)
         return {"path": str(target), "filename": target.name, "relative": f"captures/{target.name}"}
 

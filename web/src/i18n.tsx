@@ -341,6 +341,8 @@ const ja = {
   "error.videoUnplayable": "この動画は再生用に変換できませんでした",
   "error.mediaMissing": "ファイルが見つかりません: {path}",
   "error.incompatibleCategories": "既存の認識結果とカテゴリが矛盾しています",
+  "error.badImage": "画像データを読み取れませんでした",
+  "error.imageTooLarge": "画像データが大きすぎます",
 };
 
 type Key = keyof typeof ja;
@@ -684,6 +686,8 @@ const en: Record<Key, string> = {
   "error.videoUnplayable": "This video could not be converted for playback",
   "error.mediaMissing": "File not found: {path}",
   "error.incompatibleCategories": "Categories conflict with existing recognitions",
+  "error.badImage": "Could not read the image data",
+  "error.imageTooLarge": "The image data is too large",
 };
 
 const dictionaries: Record<Lang, Record<string, string>> = { ja, en };

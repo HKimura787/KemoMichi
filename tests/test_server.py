@@ -8,10 +8,18 @@ import pytest
 from conftest import needs_ffmpeg
 from fastapi.testclient import TestClient
 
+import kemoserver.app as app_module
 from kemocore.demo import make_image
 from kemocore.timelapse.create import create_template, scan_media
 from kemoserver.app import create_app
 from kemoserver.security import ServerConfig
+
+# A 1x1 black pixel JPEG, as the capture endpoint receives it from the browser (a data URL).
+FAKE_IMAGE_BYTES = base64.b64decode(
+    "/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////"
+    "////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
+)
+FAKE_IMAGE_DATA_URL = "data:image/jpeg;base64," + base64.b64encode(FAKE_IMAGE_BYTES).decode()
 
 
 @pytest.fixture
@@ -151,35 +159,93 @@ def test_password_and_root_restriction(demo, tmp_path):
 
 
 def test_capture_and_file_rest(client):
-    # Test file_detail returns fileRest
-    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0001"})}).json()[0]
-    detail = client.get(f"/api/files/{vid}").json()
+    # Test file_detail returns fileRest (this does not depend on the file being a video)
+    detail = client.get("/api/files/1").json()
+    assert detail["kind"] == "image"
     assert "fileRest" in detail
 
-    # Test save capture endpoint
-    # 1x1 black pixel JPEG base64
-    fake_img = "data:image/jpeg;base64,/9j/4AAQSkZJRgABAQEASABIAAD/2wBDAP//////////////////////////////////////////////////////////////////////////////////////wgALCAABAAEBAREA/8QAFBABAAAAAAAAAAAAAAAAAAAAAP/aAAgBAQABPxA="
-    res = client.post("/api/capture", json={"fileId": vid, "filename": "test_shot.jpg", "image": fake_img})
+    # Test save capture endpoint: the saved file matches exactly what was sent.
+    res = client.post("/api/capture", json={"fileId": 1, "filename": "test_shot.jpg", "image": FAKE_IMAGE_DATA_URL})
     assert res.status_code == 200
     data = res.json()
-    assert "path" in data
-    assert Path(data["path"]).exists()
-    assert Path(data["path"]).read_bytes() != b""
+    saved = Path(data["path"])
+    assert saved.exists()
+    assert saved.read_bytes() == FAKE_IMAGE_BYTES
+    assert data["filename"] == "test_shot.jpg"
+    assert data["relative"] == f"captures/{saved.name}"
+
+
+@needs_ffmpeg
+def test_capture_and_file_rest_for_video(client):
+    # Video-specific: fileRest is also present on a video row, and capture works from one.
+    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0001"})}).json()[0]
+    detail = client.get(f"/api/files/{vid}").json()
+    assert detail["kind"] == "video"
+    assert "fileRest" in detail
+    res = client.post("/api/capture", json={"fileId": vid, "filename": "video_shot.jpg", "image": FAKE_IMAGE_DATA_URL})
+    assert res.status_code == 200
+    assert Path(res.json()["path"]).read_bytes() == FAKE_IMAGE_BYTES
+
+
+def test_capture_rejects_when_project_is_read_only(client, demo):
+    opened = client.post("/api/project/open", json={"path": str(demo), "readOnly": True}).json()
+    assert opened["readOnly"] is True
+    res = client.post("/api/capture", json={"fileId": 1, "filename": "ro.jpg", "image": FAKE_IMAGE_DATA_URL})
+    assert res.status_code == 400
+    assert res.json()["error"] == "readOnly.requested"
+    assert not (demo.parent / "captures").exists()
+
+
+@pytest.mark.parametrize("bad_image", ["not-valid-base64!!!", "", "data:image/jpeg;base64,"])
+def test_capture_rejects_invalid_or_empty_base64(client, demo, bad_image):
+    res = client.post("/api/capture", json={"fileId": 1, "filename": "bad.jpg", "image": bad_image})
+    assert res.status_code == 422
+    assert res.json()["detail"]["error"] == "error.badImage"
+    assert not (demo.parent / "captures").exists()
+
+
+def test_capture_rejects_oversized_image(client, demo, monkeypatch):
+    monkeypatch.setattr(app_module, "MAX_CAPTURE_IMAGE_BYTES", 4)
+    res = client.post("/api/capture", json={"fileId": 1, "filename": "big.jpg", "image": FAKE_IMAGE_DATA_URL})
+    assert res.status_code == 413
+    assert res.json()["detail"]["error"] == "error.imageTooLarge"
+    assert not (demo.parent / "captures").exists()
+
+
+def test_capture_filename_blocks_path_traversal(client, demo):
+    res = client.post("/api/capture", json={"fileId": 1, "filename": "../../evil.jpg", "image": FAKE_IMAGE_DATA_URL})
+    assert res.status_code == 200
+    saved = Path(res.json()["path"])
+    assert saved.parent == demo.parent / "captures"
+    assert saved.name == "evil.jpg"
+    assert not (demo.parent.parent / "evil.jpg").exists()
+    assert not (demo.parent / "evil.jpg").exists()
+
+
+def test_capture_duplicate_filename_gets_suffixed_without_overwrite(client):
+    res1 = client.post("/api/capture", json={"fileId": 1, "filename": "dup.jpg", "image": FAKE_IMAGE_DATA_URL})
+    res2 = client.post("/api/capture", json={"fileId": 1, "filename": "dup.jpg", "image": FAKE_IMAGE_DATA_URL})
+    assert res1.status_code == 200 and res2.status_code == 200
+    first, second = Path(res1.json()["path"]), Path(res2.json()["path"])
+    assert first != second
+    assert first.name == "dup.jpg"
+    assert second.name == "dup_1.jpg"
+    assert first.exists() and second.exists()
+    assert first.read_bytes() == second.read_bytes() == FAKE_IMAGE_BYTES
 
 
 def test_duplicate_file_api(client):
-    vid = client.get("/api/files/ids", params={"filter": json.dumps({"text": "VID_0001"})}).json()[0]
-    detail_before = client.get(f"/api/files/{vid}").json()
+    detail_before = client.get("/api/files/1").json()
     assert detail_before["recordIndex"] == 1
     assert detail_before["recordTotal"] == 1
 
-    res = client.post(f"/api/files/{vid}/duplicate")
+    res = client.post("/api/files/1/duplicate")
     assert res.status_code == 200
     data = res.json()
     new_id = data["id"]
-    assert new_id != vid
+    assert new_id != 1
 
-    detail_after = client.get(f"/api/files/{vid}").json()
+    detail_after = client.get("/api/files/1").json()
     assert detail_after["recordIndex"] == 1
     assert detail_after["recordTotal"] == 2
 
