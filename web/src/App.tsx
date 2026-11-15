@@ -11,6 +11,8 @@ export function App() {
   const toast = useToast();
   const [info, setInfo] = useState<Info | null>(null);
   const [project, setProject] = useState<Project | null>(null);
+  const [openingProject, setOpeningProject] = useState(false);
+  const [projectSession, setProjectSession] = useState(0);
 
   useEffect(() => {
     document.documentElement.lang = lang;
@@ -24,12 +26,22 @@ export function App() {
   }, [toast.error]);
 
   if (!info) return null;
-  if (!project) return <OpenScreen info={info} onOpened={setProject} />;
   return (
-    <Workspace key={project.path} info={info} project={project} setProject={setProject}
-               onLeave={async () => {
-                 try { await api.close(); } catch { /* already closed */ }
-                 setProject(null);
-               }} />
+    <>
+      {project && (
+        <div hidden={openingProject} style={{ height: "100%" }}>
+          <Workspace key={`${project.path}:${projectSession}`} info={info} project={project} setProject={setProject}
+                     active={!openingProject} onOpenProject={() => setOpeningProject(true)} />
+        </div>
+      )}
+      {(!project || openingProject) && (
+        <OpenScreen info={info} onCancel={project ? () => setOpeningProject(false) : undefined}
+                    onOpened={(opened) => {
+                      setProject(opened);
+                      setProjectSession((session) => session + 1);
+                      setOpeningProject(false);
+                    }} />
+      )}
+    </>
   );
 }

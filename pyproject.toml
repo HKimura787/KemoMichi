@@ -19,10 +19,14 @@ dependencies = [
 dev = ["pytest>=8.3", "httpx>=0.28"]
 
 [dependency-groups]
+desktop = [
+    "pyinstaller>=6.16,<7",
+]
 dev = ["pytest>=8.3", "httpx>=0.28"]
 
 [project.scripts]
 kemo = "kemoserver.cli:main"
+kemo-desktop = "kemoserver.desktop:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
@@ -32,3 +36,4 @@ kemoserver = ["static/**/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]

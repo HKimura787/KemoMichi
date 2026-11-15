@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
 import { useI18n } from "../i18n";
-import type { Control, Palette, Row } from "../types";
+import type { Control, FileDetail, Palette, Row } from "../types";
 
 const TRUE = "true";
 
@@ -29,10 +29,10 @@ export function speciesChange(palette: Palette, row: Row | null, flag: string, o
   return values;
 }
 
-export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious,
-                            afterSpecies }: {
+export function DataPanel({ controls, row, detail, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious, onDuplicate, afterSpecies }: {
   controls: Control[];
   row: Row | null;
+  detail?: FileDetail | null;
   palette: Palette;
   locked: Set<string>;
   readOnly: boolean;
@@ -40,14 +40,26 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
   onChange: (values: Record<string, string>, confirmText?: string) => Promise<void>;
   onCopyPrevious: () => void;
   canCopyPrevious: boolean;
+  onDuplicate?: () => void;
   afterSpecies?: React.ReactNode;
 }) {
   const { t } = useI18n();
   const byLabel = new Map(controls.map((c) => [c.dataLabel, c]));
-  const paletteFlags = new Set(palette.items.map((i) => i.flag));
-  const paletteCounters = new Set(palette.items.map((i) => i.counter).filter(Boolean) as string[]);
-  const others = controls.filter((c) => !c.standard && c.visible && !paletteFlags.has(c.dataLabel) &&
-                                        !paletteCounters.has(c.dataLabel));
+  const paletteItems = palette.items.filter((item) => {
+    const control = byLabel.get(item.flag);
+    return control?.type === "Flag" && control.visible && !locked.has(item.flag);
+  }).map((item) => ({ ...item, counter: item.counter && byLabel.get(item.counter)?.type === "Counter" &&
+    !locked.has(item.counter) ? item.counter : null }));
+  const inputPalette = { ...palette, items: paletteItems };
+  const paletteFlags = new Set(paletteItems.map((i) => i.flag));
+  const counterOwners = new Map<string, string>();
+  for (const item of paletteItems) {
+    if (item.counter && byLabel.get(item.counter)?.type === "Counter" && !locked.has(item.counter)) {
+      counterOwners.set(item.counter, item.flag);
+    }
+  }
+  // A palette association must never hide a template's input field.
+  const others = controls.filter((c) => !c.standard && c.visible && !paletteFlags.has(c.dataLabel));
   const bulk = bulkCount > 1;
   const disabled = readOnly || (!row && !bulk);
   const values = bulk ? {} as Record<string, string> : row?.values ?? {};
@@ -57,23 +69,46 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
     const confirmText = bulk
       ? t("data.bulkConfirm", { count: bulkCount, field: control?.label ?? label, value })
       : undefined;
-    return onChange({ [label]: value }, confirmText);
+    const flag = counterOwners.get(label);
+    return onChange(flag ? speciesChange(inputPalette, bulk ? null : row, flag, Number(value) > 0, value)
+      : { [label]: value }, confirmText);
   };
 
   return (
     <>
       {bulk && <div className="bulk"><strong>{t("data.bulk", { count: bulkCount })}</strong><br />{t("data.bulkHint", { count: bulkCount })}</div>}
       {!bulk && row && (
-        <div className="field">
-          <span className="label">{t("data.file")}</span>
-          <span className="path">{row.values.RelativePath ? `${row.values.RelativePath}\\` : ""}{row.values.File}</span>
+        <div style={{ marginBottom: 12 }}>
+          <div className="field" style={{ marginBottom: onDuplicate ? 6 : undefined }}>
+            <span className="label">
+              {t("data.file")}
+              {detail?.recordTotal && detail.recordTotal > 1 ? (
+                <span style={{ marginLeft: 6, fontWeight: "normal", fontSize: "0.85em", opacity: 0.85 }}>
+                  {t("data.recordIndex", { current: detail.recordIndex, total: detail.recordTotal })}
+                </span>
+              ) : null}
+            </span>
+            <span className="path">{row.values.RelativePath ? `${row.values.RelativePath}\\` : ""}{row.values.File}</span>
+          </div>
+          {onDuplicate && (
+            <button
+              type="button"
+              className="btn small"
+              disabled={disabled}
+              onClick={onDuplicate}
+              title={t("data.duplicateHint")}
+              style={{ width: "100%", justifyContent: "center" }}
+            >
+              ＋ {t("data.duplicate")}
+            </button>
+          )}
         </div>
       )}
 
       <div className="section-title">{t("data.species")}<span className="sub">{t("data.speciesHint")}</span></div>
-      {palette.items.length === 0 && <p className="note">{t("data.noPalette")}</p>}
+      {paletteItems.length === 0 && <p className="note">{t("data.noPalette")}</p>}
       <div className="palette">
-        {palette.items.map((item) => {
+        {paletteItems.map((item) => {
           const control = byLabel.get(item.flag);
           if (!control) return null;
           const on = !bulk && isTrue(values[item.flag]);
@@ -82,7 +117,7 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
             <button key={item.flag} className="sp" aria-pressed={on} disabled={disabled}
                     title={control.tooltip || control.label}
                     onClick={() => {
-                      const change = speciesChange(palette, bulk ? null : row, item.flag, !on);
+                      const change = speciesChange(inputPalette, bulk ? null : row, item.flag, !on);
                       onChange(change, bulk ? t("data.bulkConfirm", { count: bulkCount, field: control.label, value: String(!on) }) : undefined);
                     }}>
               {control.label}
@@ -93,26 +128,6 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
           );
         })}
       </div>
-      {!bulk && row && (
-        <div className="counts">
-          {palette.items.filter((i) => i.counter && isTrue(values[i.flag])).map((item) => {
-            const flag = byLabel.get(item.flag)!;
-            const counter = item.counter!;
-            const current = Number(values[counter] || 0);
-            const set = (n: number) => onChange(speciesChange(palette, row, item.flag, n > 0, String(Math.max(0, n))));
-            return (
-              <div key={item.flag} className="count-row">
-                <span>{flag.label} {t("data.count")}</span>
-                <TextField value={values[counter] ?? ""} disabled={disabled} ariaLabel={`${flag.label} ${t("data.count")}`}
-                           onCommit={(v) => set(Number(v || 0))} inputMode="numeric" />
-                <button className="btn small" disabled={disabled} onClick={() => set(current - 1)} aria-label="-1">−</button>
-                <button className="btn small" disabled={disabled} onClick={() => set(current + 1)} aria-label="+1">+</button>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
       {afterSpecies}
 
       <div className="section-title">{t("data.other")}</div>
@@ -124,6 +139,7 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
       {others.map((c) => (
         <ControlField key={c.dataLabel} control={c} value={values[c.dataLabel] ?? ""} bulk={bulk}
                       disabled={disabled} locked={locked.has(c.dataLabel)}
+                      stepButtons={!bulk && counterOwners.has(c.dataLabel)}
                       onCommit={(v) => write(c.dataLabel, v)} />
       ))}
       {byLabel.get("DateTime") && !bulk && row && (
@@ -141,8 +157,9 @@ export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount,
   );
 }
 
-function ControlField({ control, value, disabled, locked, bulk, onCommit }: {
+function ControlField({ control, value, disabled, locked, bulk, stepButtons, onCommit }: {
   control: Control; value: string; disabled: boolean; locked: boolean; bulk: boolean;
+  stepButtons?: boolean;
   onCommit: (value: string) => Promise<void>;
 }) {
   const { t } = useI18n();
@@ -205,7 +222,13 @@ function ControlField({ control, value, disabled, locked, bulk, onCommit }: {
   return (
     <div className={`field${error ? " invalid" : ""}`} title={control.tooltip}>
       <label htmlFor={id} id={`${id}-l`}>{control.label}</label>
-      {input}
+      {stepButtons ? <div className="counter-input">
+        {input}
+        <button className="btn small" disabled={common.disabled} aria-label={`${control.label} -1`}
+                onClick={() => commit(String(Math.max(0, Number(value || 0) - 1)))}>−</button>
+        <button className="btn small" disabled={common.disabled} aria-label={`${control.label} +1`}
+                onClick={() => commit(String(Math.max(0, Number(value || 0) + 1)))}>+</button>
+      </div> : input}
       {locked && <span className="note">{t("data.locked")}</span>}
       {error && <span className="msg">✕ {error}</span>}
     </div>

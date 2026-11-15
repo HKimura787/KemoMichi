@@ -150,6 +150,7 @@
 | `Classifications` | 古い形式の認識結果（読み込み時に `Detections` へ統合される） |
 
 既定のファイル名は `TimelapseData.ddb` と `TimelapseTemplate.tdb`。
+KemoMichi での新規作成時は、テンプレートと同じ名前の `.ddb` にする（例: `調査.tdb` → `調査.ddb`）。
 
 ### 2.2 `DataTable`
 
@@ -398,6 +399,7 @@ Timelapse は `.ddb` を開くとき、その中のテンプレートと `.tdb` 
 ### 8.1 出力
 
 - 既定のファイル名 `ImageData.csv`。**UTF-8（BOM 付き）**、改行は CRLF、区切りはカンマ。
+  KemoMichi では、既定の出力名をデータファイルと同じ基本名にする（例: `調査.ddb` → `調査.csv`）。
 - 値にダブルクォート・カンマ・改行が含まれるときだけダブルクォートで囲み、中のダブルクォートは 2 つ重ねる。
 - 列の順序:
   1. フォルダ階層ごとの列（見出しは Alias、空なら `Level-N`）。レベル 1 は常に空、レベル N は相対パスの先頭 N-1 階層。

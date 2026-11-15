@@ -23,7 +23,7 @@ def demo(tmp_path_factory, tmp_path) -> Path:
         _TEMPLATE_CACHE["demo"] = base
     target = tmp_path / "project"
     shutil.copytree(_TEMPLATE_CACHE["demo"], target)
-    return target / "TimelapseData.ddb"
+    return target / "TimelapseTemplate.ddb"
 
 
 def has_ffmpeg() -> bool:

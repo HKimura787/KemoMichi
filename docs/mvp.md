@@ -19,7 +19,7 @@ uv sync                                   # 初回だけ。.venv を作って依
 
 # まずはデモで試す（ダミーの画像・動画と見本テンプレートを作る。実データは使わない）
 uv run kemo demo ~/kemomichi-demo
-uv run kemo serve ~/kemomichi-demo/TimelapseData.ddb
+uv run kemo serve ~/kemomichi-demo/TimelapseTemplate.ddb
 ```
 
 どのフォルダからでも `kemo` で起動したい場合は、コマンドとして入れます。
@@ -37,11 +37,28 @@ python -m venv .venv
 # Windows: .venv\Scripts\activate   macOS/Linux: source .venv/bin/activate
 pip install -e .
 kemo demo ~/kemomichi-demo
-kemo serve ~/kemomichi-demo/TimelapseData.ddb
+kemo serve ~/kemomichi-demo/TimelapseTemplate.ddb
 ```
 
 ブラウザが自動で開きます（開かなければ <http://127.0.0.1:8765/>）。
 自分のデータで試すときは `kemo serve`（uv なら `uv run kemo serve`）だけで起動し、画面から `.ddb` を選びます。
+「既存のddbを開く・再開」で「ファイル・フォルダのパス」にフルパスを貼り付けると、
+フォルダの場合は中のddbを選べ、ddbファイルの場合はEnterで直接開けます。
+パスを入力した場合も「読み取り専用で開く」を利用できます。サーバ利用時は、サーバ上の許可されたフォルダ内のパスを指定します。
+
+「tdbから新規作成」では、画像・動画フォルダを選んでからテンプレートを指定します。
+テンプレート選択画面でもファイル・フォルダのパスを入力できます。
+続いて入力項目・選択肢・初期値などを編集し、確認画面で確定してからddbを作成します。
+確定版tdbとddbは、指定したプロジェクト名と同じ基本名で保存します。元のtdbと既存ファイルは上書きしません。
+同名ファイルがあるときは別名を提案します。詳しくは [tdb編集の手順](template-editor.md) を参照してください。
+CLIの `kemo new` とデモ作成は、従来どおり元のtdbと同じ名前でddbを作ります。
+
+判読位置（ファイル・動画フレーム・絞り込み・表示モード）は `.ddb.kemomichi` に保存し、
+次に同じddbを開くと再開します。読み取り専用のときは新しい位置は保存しません。
+出力CSVはddbと同じ基本名です（例: `調査.ddb` → `調査.csv`）。
+
+メニューの「別のプロジェクトを開く」から選択画面へ移動した場合は、「メイン画面に戻る」または Esc で
+作業中の画面へ戻れます。別のプロジェクトを開くまでは、選択中の画像や絞り込み条件を保持します。
 
 **初めて自分のデータで使うときは、必ずプロジェクトのフォルダごとコピーを取ってから**試してください。
 KemoMichi も書き込み前に `Backups/` にバックアップを作りますが、MVP のためです。
@@ -127,7 +144,7 @@ kemo serve --host 0.0.0.0 --password 共有パスワード --root /data/camera
 - フレーム単位の記録（種・個数・メモ）、手動のポイント・BBox、トラッキング・姿勢（P2b 残り・P4）
 - エピソード、QuickPaste、日時補正、削除の実行、フォルダ階層データの入力、テンプレートエディタ（P4）
 - 自動レベル補正・局所コントラスト強調（色味調整の追加分）
-- デスクトップアプリとしての配布（インストーラ。P3。現在はブラウザで動きます）
+- 補助アプリの一般公開に向けた署名・公証・配布条件の確認（試用ビルドは [desktop-build.md](desktop-build.md)）
 - 複数人での同時編集の競合表示（P5）
 
 ## 7. 分かっている制約

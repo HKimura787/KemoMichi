@@ -201,6 +201,8 @@ export function ShortcutsDialog({ onClose }: { onClose: () => void }) {
     ["← / →", t("sc.prevNext")],
     [", / .", t("sc.frame")],
     ["Space", t("sc.play")],
+    ["[ / ]", t("sc.speed")],
+    ["C", t("sc.capture")],
     ["1 … 9, 0", t("sc.species")],
     ["S / E", t("sc.se")],
     ["Shift+S / Shift+E", t("sc.seShift")],

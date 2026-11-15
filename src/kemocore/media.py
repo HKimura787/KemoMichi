@@ -4,24 +4,65 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
-import shutil
-import subprocess
+import re
 import threading
+import uuid
+from collections import Counter
+from contextlib import contextmanager
+from contextvars import ContextVar
 from fractions import Fraction
 from pathlib import Path
+from typing import Callable, TypeVar
 
 from PIL import Image, ImageOps
 
+from .runtime import run_tool, tool_path
 from .timelapse.constants import IMAGE_EXTENSIONS, VIDEO_EXTENSIONS
 
 THUMB_SIZE = 320
 PREVIEW_SIZE = 1920
+DEFAULT_CACHE_MAX_BYTES = 2 * 1024**3
 # Containers that hold H.264 which Chrome, Edge, Safari and the desktop app play directly.
 _PLAYABLE_CONTAINERS = {".mp4", ".mov", ".webm", ".m4v"}
 
 _locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
+_cache_guard = threading.Lock()
+_active_cache: Counter[Path] = Counter()
+# Only completed files created by this module are eligible; never follow symlinks or remove temporaries.
+_CACHE_FILE = re.compile(r"[0-9a-f]{40}\.(?:jpg|json|mp4|webm)\Z")
+log = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+
+class CacheLease:
+    """Keep generated/reused entries alive until an HTTP response finishes serving them."""
+
+    def __init__(self):
+        self._paths: set[Path] = set()
+
+    def generate(self, create: Callable[[], _T]) -> _T:
+        token = _cache_lease.set(self)
+        try:
+            return create()
+        except BaseException:
+            self.close()
+            raise
+        finally:
+            _cache_lease.reset(token)
+
+    def close(self):
+        with _cache_guard:
+            for path in self._paths:
+                _active_cache[path] -= 1
+                if not _active_cache[path]:
+                    del _active_cache[path]
+            self._paths.clear()
+
+
+_cache_lease: ContextVar[CacheLease | None] = ContextVar("media_cache_lease", default=None)
 
 
 def _lock_for(key: str) -> threading.Lock:
@@ -38,7 +79,108 @@ def cache_dir() -> Path:
     else:
         path = Path(os.environ.get("XDG_CACHE_HOME", Path.home() / ".cache")) / "kemomichi"
     path.mkdir(parents=True, exist_ok=True)
-    return path
+    return path.resolve()
+
+
+def _cache_limit() -> int:
+    value = os.environ.get("KEMOMICHI_CACHE_MAX_BYTES")
+    if value is None:
+        return DEFAULT_CACHE_MAX_BYTES
+    try:
+        limit = int(value)
+        if limit >= 0:
+            return limit
+    except ValueError:
+        pass
+    log.warning("Invalid KEMOMICHI_CACHE_MAX_BYTES=%r; using %s bytes", value, DEFAULT_CACHE_MAX_BYTES)
+    return DEFAULT_CACHE_MAX_BYTES
+
+
+@contextmanager
+def _cache_entry(path: Path, kind: str, suffix: str):
+    target = cache_dir() / f"{_key(path, kind)}{suffix}"
+    with _cache_guard:
+        _active_cache[target] += 1
+        lease = _cache_lease.get()
+        if lease is not None and target not in lease._paths:
+            lease._paths.add(target)
+            _active_cache[target] += 1
+    try:
+        with _lock_for(str(target)):
+            yield target
+    finally:
+        with _cache_guard:
+            _active_cache[target] -= 1
+            if not _active_cache[target]:
+                del _active_cache[target]
+
+
+def _cache_hit(target: Path) -> bool:
+    """Record last use in the cache file's mtime; filesystem atime may be disabled or noisy."""
+    with _cache_guard:
+        try:
+            target.stat()
+        except FileNotFoundError:
+            return False
+        try:
+            os.utime(target, None)
+        except FileNotFoundError:
+            return False
+        except OSError:
+            pass  # A read-only cache entry can still be reused.
+        return True
+
+
+@contextmanager
+def _temporary_cache_file(target: Path):
+    # Unique names avoid collisions with another process converting the same source.
+    tmp = target.with_name(f"{target.stem}.{uuid.uuid4().hex}.tmp{target.suffix}")
+    try:
+        yield tmp
+    finally:
+        tmp.unlink(missing_ok=True)
+
+
+def _prune_cache(folder: Path) -> None:
+    """Called under _cache_guard after publishing; active entries count but are never evicted."""
+    entries = []
+    total = 0
+    with os.scandir(folder) as scan:
+        for entry in scan:
+            try:
+                if not _CACHE_FILE.fullmatch(entry.name) or not entry.is_file(follow_symlinks=False):
+                    continue
+                stat = entry.stat(follow_symlinks=False)
+            except OSError:
+                continue
+            target = folder / entry.name
+            total += stat.st_size
+            entries.append((stat.st_mtime_ns, target, stat.st_size))
+    limit = _cache_limit()
+    if total <= limit:
+        return
+    for _, target, size in sorted(entries):
+        if _active_cache[target]:
+            continue
+        try:
+            target.unlink(missing_ok=True)
+        except OSError:
+            # Windows can refuse deletion while another process is serving this file.
+            continue
+        total -= size
+        if total <= limit:
+            break
+
+
+def _publish_cache(tmp: Path, target: Path) -> None:
+    with _cache_guard:
+        tmp.replace(target)
+        # The current target is pinned by _cache_entry, even if it alone exceeds the limit.
+        try:
+            os.utime(target, None)
+            _prune_cache(target.parent)
+        except OSError:
+            log.warning("Could not clean media cache %s", target.parent, exc_info=True)
 
 
 def _key(path: Path, kind: str) -> str:
@@ -57,21 +199,18 @@ def is_image(path: Path) -> bool:
 
 def image_rendition(path: Path, size: int) -> Path:
     """A JPEG no larger than `size` on its long side, with EXIF rotation applied."""
-    target = cache_dir() / f"{_key(path, f'img{size}')}.jpg"
-    if target.exists():
-        return target
-    with _lock_for(str(target)):
-        if target.exists():
+    with _cache_entry(path, f"img{size}", ".jpg") as target:
+        if _cache_hit(target):
             return target
         with Image.open(path) as img:
             img = ImageOps.exif_transpose(img)
             img.thumbnail((size, size))
             if img.mode not in ("RGB", "L"):
                 img = img.convert("RGB")
-            tmp = target.with_suffix(".tmp")
-            img.save(tmp, "JPEG", quality=85 if size <= THUMB_SIZE else 90)
-            tmp.replace(target)
-    return target
+            with _temporary_cache_file(target) as tmp:
+                img.save(tmp, "JPEG", quality=85 if size <= THUMB_SIZE else 90)
+                _publish_cache(tmp, target)
+        return target
 
 
 def image_size(path: Path) -> tuple[int, int]:
@@ -81,50 +220,48 @@ def image_size(path: Path) -> tuple[int, int]:
 
 
 def has_ffmpeg() -> bool:
-    return shutil.which("ffmpeg") is not None and shutil.which("ffprobe") is not None
+    return tool_path("ffmpeg") is not None and tool_path("ffprobe") is not None
 
 
 def video_thumbnail(path: Path, size: int = THUMB_SIZE) -> Path | None:
     if not has_ffmpeg():
         return None
-    target = cache_dir() / f"{_key(path, f'vthumb{size}')}.jpg"
-    if target.exists():
-        return target
-    with _lock_for(str(target)):
-        if target.exists():
+    with _cache_entry(path, f"vthumb{size}", ".jpg") as target:
+        if _cache_hit(target):
             return target
-        tmp = target.with_suffix(".tmp.jpg")
-        result = subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-frames:v", "1",
-             "-vf", f"scale='min({size},iw)':-2", str(tmp)],
-            capture_output=True)
-        if result.returncode != 0 or not tmp.exists():
-            return None
-        tmp.replace(target)
-    return target
+        with _temporary_cache_file(target) as tmp:
+            result = run_tool("ffmpeg",
+                ["-v", "error", "-y", "-i", str(path), "-frames:v", "1",
+                 "-vf", f"scale='min({size},iw)':-2", str(tmp)],
+                capture_output=True)
+            if result.returncode != 0 or not tmp.exists() or not tmp.stat().st_size:
+                return None
+            _publish_cache(tmp, target)
+        return target
 
 
 def video_info(path: Path) -> dict:
     """Codec, size, frame rate and the exact time of every frame (from ffprobe), cached."""
-    target = cache_dir() / f"{_key(path, 'vinfo2')}.json"
-    if target.exists():
-        return json.loads(target.read_text())
-    if not has_ffmpeg():
-        return {"available": False}
-    with _lock_for(str(target)):
-        if target.exists():
-            return json.loads(target.read_text())
-        probe = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+    with _cache_entry(path, "vinfo2", ".json") as target:
+        if _cache_hit(target):
+            return json.loads(target.read_text(encoding="utf-8"))
+        if not has_ffmpeg():
+            return {"available": False}
+        probe = run_tool("ffprobe",
+            ["-v", "error", "-select_streams", "v:0", "-show_entries",
              "stream=codec_name,width,height,r_frame_rate,avg_frame_rate,time_base:stream_tags=rotate:"
              "stream_side_data=rotation:format=duration,format_name",
              "-of", "json", str(path)], capture_output=True, text=True)
+        if probe.returncode != 0:
+            return {"available": False}
         meta = json.loads(probe.stdout or "{}")
         stream = (meta.get("streams") or [{}])[0]
         time_base = Fraction(stream.get("time_base") or "1/1000")
-        frames = subprocess.run(
-            ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries",
+        frames = run_tool("ffprobe",
+            ["-v", "error", "-select_streams", "v:0", "-show_entries",
              "frame=best_effort_timestamp", "-of", "csv=p=0", str(path)], capture_output=True, text=True)
+        if frames.returncode != 0:
+            return {"available": False}
         stamps = []
         for line in frames.stdout.splitlines():
             line = line.strip().rstrip(",")
@@ -159,8 +296,10 @@ def video_info(path: Path) -> dict:
             "frameTicks": [s - first for s in stamps],
             "container": (meta.get("format") or {}).get("format_name"),
         }
-        target.write_text(json.dumps(info))
-    return info
+        with _temporary_cache_file(target) as tmp:
+            tmp.write_text(json.dumps(info), encoding="utf-8")
+            _publish_cache(tmp, target)
+        return info
 
 
 def frame_seconds(info: dict, frame: int) -> Fraction:
@@ -188,20 +327,17 @@ def playable_video(path: Path, container: str = "mp4") -> Path | None:
     `container` is "mp4" (H.264, for Chrome, Edge, Safari and the desktop app) or "webm" (VP9,
     for browsers built without H.264).
     """
-    info = video_info(path)
-    if container == "mp4" and path.suffix.lower() in _PLAYABLE_CONTAINERS and info.get("codec") == "h264":
-        return path
-    if container == "webm" and path.suffix.lower() == ".webm":
-        return path
-    if not has_ffmpeg():
-        return None
-    target = cache_dir() / f"{_key(path, 'proxy2-' + container)}.{container}"
-    if target.exists():
-        return target
-    with _lock_for(str(target)):
-        if target.exists():
+    with _cache_entry(path, "proxy2-" + container, f".{container}") as target:
+        # Metadata may itself need to be generated; pin the requested proxy before that write.
+        info = video_info(path)
+        if container == "mp4" and path.suffix.lower() in _PLAYABLE_CONTAINERS and info.get("codec") == "h264":
+            return path
+        if container == "webm" and path.suffix.lower() == ".webm":
+            return path
+        if not has_ffmpeg():
+            return None
+        if _cache_hit(target):
             return target
-        tmp = target.with_suffix(f".tmp.{container}")
         if container == "webm":
             codec = ["-c:v", "libvpx-vp9", "-deadline", "realtime", "-cpu-used", "8", "-crf", "32", "-b:v", "0",
                      "-row-mt", "1", "-c:a", "libopus"]
@@ -209,11 +345,11 @@ def playable_video(path: Path, container: str = "mp4") -> Path | None:
             codec = ["-c:v", "libx264", "-preset", "veryfast", "-crf", "18", "-pix_fmt", "yuv420p", "-c:a", "aac",
                      "-movflags", "+faststart"]
         # passthrough keeps every frame and its timestamp: no frames dropped or duplicated.
-        result = subprocess.run(
-            ["ffmpeg", "-v", "error", "-y", "-i", str(path), "-map", "0:v:0", "-map", "0:a?",
-             "-fps_mode", "passthrough", *codec, str(tmp)], capture_output=True)
-        if result.returncode != 0:
-            tmp.unlink(missing_ok=True)
-            return None
-        tmp.replace(target)
-    return target
+        with _temporary_cache_file(target) as tmp:
+            result = run_tool("ffmpeg",
+                ["-v", "error", "-y", "-i", str(path), "-map", "0:v:0", "-map", "0:a?",
+                 "-fps_mode", "passthrough", *codec, str(tmp)], capture_output=True)
+            if result.returncode != 0 or not tmp.exists() or not tmp.stat().st_size:
+                return None
+            _publish_cache(tmp, target)
+        return target

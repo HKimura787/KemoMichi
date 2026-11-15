@@ -2,12 +2,13 @@
 
 from __future__ import annotations
 
+import base64
 import json
 import shutil
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from kemocore import __version__, events, media
@@ -18,8 +19,13 @@ from kemocore.timelapse.csv_export import export_csv
 from kemocore.timelapse.project import ProjectError
 from kemocore.timelapse.recognitions import import_recognitions
 from kemocore.timelapse.template import ValueError_, make_data_label
+from kemocore.timelapse.template_edit import (
+    project_name, read_template, suggest_name, validate_controls, write_template_copy,
+)
 
+from .media_response import cached_file_response
 from .security import BasicAuthMiddleware, ServerConfig
+from .template_models import TemplateDraft
 from .workspace import Jobs, Workspace
 
 STATIC_DIR = Path(__file__).parent / "static"
@@ -30,6 +36,7 @@ def create_app(config: ServerConfig) -> FastAPI:
     ws = Workspace()
     jobs = Jobs()
     app.state.workspace = ws
+    app.state.jobs = jobs
     app.state.config = config
 
     @app.exception_handler(ProjectError)
@@ -73,6 +80,10 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.get("/api/browse")
     def browse(path: str):
         folder = checked_path(path)
+        selected = None
+        if folder.is_file() and folder.suffix.lower() in (".ddb", ".tdb", ".json"):
+            selected = {"name": folder.name, "path": str(folder), "kind": folder.suffix.lower()[1:]}
+            folder = folder.parent
         if not folder.is_dir():
             raise HTTPException(404, detail={"error": "error.notFound", "params": {"path": path}})
         dirs, files = [], []
@@ -91,7 +102,8 @@ def create_app(config: ServerConfig) -> FastAPI:
             except OSError:
                 continue
         parent = folder.parent if folder.parent != folder and config.allowed(folder.parent) else None
-        return {"path": str(folder), "parent": str(parent) if parent else None, "dirs": dirs, "files": files}
+        return {"path": str(folder), "parent": str(parent) if parent else None, "dirs": dirs, "files": files,
+                "selected": selected}
 
     # ---- project -----------------------------------------------------------------------------
 
@@ -127,9 +139,43 @@ def create_app(config: ServerConfig) -> FastAPI:
         ws.close()
         return {"ok": True}
 
+    @app.get("/api/template")
+    def get_template(path: str, folder: str):
+        source = checked_path(path)
+        root = checked_path(folder)
+        if not root.is_dir():
+            raise HTTPException(404, detail={"error": "error.notFound", "params": {"path": folder}})
+        document = read_template(source)
+        return {"path": str(source), "revision": document.revision,
+                "controls": [control.to_dict() for control in document.controls],
+                "suggestedName": suggest_name(root, source.stem)}
+
+    def template_plan(folder: str, template: str, draft: TemplateDraft):
+        root, source = checked_path(folder), checked_path(template)
+        if not root.is_dir():
+            raise HTTPException(404, detail={"error": "error.notFound", "params": {"path": folder}})
+        document = read_template(source)
+        if document.revision != draft.revision:
+            raise HTTPException(409, detail={"error": "error.templateChanged"})
+        controls = validate_controls([control.model_dump() for control in draft.controls], document)
+        name = project_name(draft.name)
+        local_template, ddb = root / f"{name}.tdb", root / f"{name}.ddb"
+        if ddb.exists():
+            raise HTTPException(409, detail={"error": "error.ddbExists", "params": {"path": str(ddb)}})
+        if local_template.exists():
+            raise HTTPException(409, detail={"error": "error.templateExists", "params": {"path": str(local_template)}})
+        return source, local_template, ddb, controls
+
+    @app.post("/api/template/validate")
+    def validate_template(folder: str = Body(...), template: str = Body(...), draft: TemplateDraft = Body(...)):
+        _source, local_template, ddb, controls = template_plan(folder, template, draft)
+        return {"name": ddb.stem, "revision": draft.revision,
+                "controls": [control.to_dict() for control in controls],
+                "templatePath": str(local_template), "ddbPath": str(ddb)}
+
     @app.post("/api/project/create")
     def create_project(folder: str = Body(..., embed=True), template: str | None = Body(None, embed=True),
-                       demo: bool = Body(False, embed=True)):
+                       demo: bool = Body(False, embed=True), draft: TemplateDraft | None = Body(None)):
         root = checked_path(folder)
         if demo:
             def work(progress):
@@ -139,8 +185,29 @@ def create_app(config: ServerConfig) -> FastAPI:
             return jobs.start("create", work).to_dict()
         if not template:
             raise HTTPException(400, detail={"error": "error.templateRequired"})
+        if draft is not None:
+            source, local_template, ddb, controls = template_plan(folder, template, draft)
+
+            def reviewed_work(progress):
+                # Serialize project creations and the final workspace switch in this server.
+                with ws.lock:
+                    wrote_template = wrote_ddb = False
+                    try:
+                        write_template_copy(source, local_template, controls, draft.revision)
+                        wrote_template = True
+                        count = create_data_file(ddb, local_template, progress)
+                        wrote_ddb = True
+                        ws.open(ddb)
+                        return {"path": str(ddb), "files": count}
+                    except Exception:
+                        if wrote_ddb:
+                            ddb.unlink(missing_ok=True)
+                        if wrote_template:
+                            local_template.unlink(missing_ok=True)
+                        raise
+            return jobs.start("create", reviewed_work).to_dict()
         template_path = checked_path(template)
-        ddb = root / C.DEFAULT_DDB_NAME
+        ddb = root / template_path.with_suffix(".ddb").name
         if ddb.exists():
             raise HTTPException(409, detail={"error": "error.ddbExists", "params": {"path": str(ddb)}})
 
@@ -177,22 +244,22 @@ def create_app(config: ServerConfig) -> FastAPI:
     def folders():
         return project().folders()
 
-    def list_filter(text: str | None) -> dict:
+    def list_filter(text: str | None, records: bool = False) -> dict:
         """The UI's filter, without the rows KemoMichi duplicated for events: one stop per file."""
         flt = parse_filter(text)
-        if not flt.get("ids"):
+        if not records and not flt.get("ids"):
             flt["excludeIds"] = list(ws.sidecar.all_duplicates())
         return flt
 
     @app.get("/api/files")
-    def files(filter: str | None = None, offset: int = 0, limit: int = 200):
-        flt = list_filter(filter)
+    def files(filter: str | None = None, offset: int = 0, limit: int = 200, records: bool = False):
+        flt = list_filter(filter, records)
         p = project()
         return {"total": p.count(flt), "offset": offset, "rows": p.files(flt, offset, min(limit, 2000))}
 
     @app.get("/api/files/ids")
-    def file_ids(filter: str | None = None):
-        return project().ids(list_filter(filter))
+    def file_ids(filter: str | None = None, records: bool = False):
+        return project().ids(list_filter(filter, records))
 
     @app.get("/api/files/{file_id}")
     def file_detail(file_id: int):
@@ -200,13 +267,28 @@ def create_app(config: ServerConfig) -> FastAPI:
         row = file_or_404(file_id)
         row["detections"] = p.detections(file_id)
         row["markers"] = p.markers(file_id)
+        row["fileRest"] = ws.sidecar.file_rest(file_id)
         same = p.same_file_ids(file_id)
         row["events"] = [events.describe(p, e) for e in ws.sidecar.events_touching(same[:1])]
         row["sameFileRows"] = same
         row["duplicateOf"] = ws.sidecar.all_duplicates().get(file_id)
         row["kind"] = "video" if media.is_video(p.media_path(row)) else "image"
         row["exists"] = p.media_path(row).exists()
+        rec_info = p.file_records_info(file_id)
+        row["recordIndex"] = rec_info["index"]
+        row["recordTotal"] = rec_info["total"]
         return row
+
+    @app.post("/api/files/{file_id}/duplicate")
+    def duplicate_file(file_id: int):
+        p = project()
+        file_or_404(file_id)
+        new_id = p.duplicate(file_id)
+        return {
+            "id": new_id,
+            "row": p.file(new_id),
+            "total": p.count({}),
+        }
 
     @app.patch("/api/files")
     def update_files(ids: list[int] = Body(...), values: dict = Body(...)):
@@ -253,20 +335,18 @@ def create_app(config: ServerConfig) -> FastAPI:
     def thumb(file_id: int):
         path = media_file(file_id)
         if media.is_video(path):
-            rendition = media.video_thumbnail(path)
-            if rendition is None:
-                return Response(status_code=204)
-        else:
-            rendition = media.image_rendition(path, media.THUMB_SIZE)
-        return FileResponse(rendition, media_type="image/jpeg", headers=cache_headers)
+            return cached_file_response(lambda: media.video_thumbnail(path), media_type="image/jpeg",
+                                        headers=cache_headers)
+        return cached_file_response(lambda: media.image_rendition(path, media.THUMB_SIZE),
+                                    media_type="image/jpeg", headers=cache_headers)
 
     @app.get("/api/media/{file_id}/preview")
     def preview(file_id: int):
         path = media_file(file_id)
         if media.is_video(path):
             return thumb(file_id)
-        return FileResponse(media.image_rendition(path, media.PREVIEW_SIZE), media_type="image/jpeg",
-                            headers=cache_headers)
+        return cached_file_response(lambda: media.image_rendition(path, media.PREVIEW_SIZE),
+                                    media_type="image/jpeg", headers=cache_headers)
 
     @app.get("/api/media/{file_id}/original")
     def original(file_id: int):
@@ -277,10 +357,8 @@ def create_app(config: ServerConfig) -> FastAPI:
     def video(file_id: int, format: str = "mp4"):
         path = media_file(file_id)
         container = "webm" if format == "webm" else "mp4"
-        playable = media.playable_video(path, container)
-        if playable is None:
-            raise HTTPException(415, detail={"error": "error.videoUnplayable"})
-        return FileResponse(playable, media_type=f"video/{container}", headers=cache_headers)
+        return cached_file_response(lambda: media.playable_video(path, container), media_type=f"video/{container}",
+                                    headers=cache_headers, missing_status=415)
 
     @app.get("/api/media/{file_id}/video-info")
     def video_info(file_id: int):
@@ -292,6 +370,22 @@ def create_app(config: ServerConfig) -> FastAPI:
         return info
 
     # ---- settings ------------------------------------------------------------------------
+
+    @app.put("/api/review-position")
+    def save_review_position(expectedPath: str = Body(...), fileId: int = Body(..., ge=1),
+                             frame: int = Body(0, ge=0), filter: dict | None = Body(None),
+                             view: str = Body("viewer")):
+        p = project()
+        if str(p.path) != expectedPath:
+            raise HTTPException(409, detail={"error": "error.projectChanged"})
+        if p.file(fileId) is None:
+            raise HTTPException(404, detail={"error": "error.fileNotFound"})
+        if view not in ("viewer", "grid", "table"):
+            raise HTTPException(422, detail={"error": "error.badSetting"})
+        if p.read_only:
+            return {"saved": False}
+        ws.sidecar.set("reviewPosition", {"fileId": fileId, "frame": frame, "filter": filter or {}, "view": view})
+        return {"saved": True}
 
     @app.put("/api/settings/{key}")
     def put_setting(key: str, value=Body(..., embed=True)):
@@ -362,13 +456,36 @@ def create_app(config: ServerConfig) -> FastAPI:
 
     @app.post("/api/export/csv")
     def export(target: str | None = Body(None, embed=True)):
-        out = export_csv(project(), checked_path(target) if target else None)
+        out = export_csv(project(), checked_path(target) if target else None, sidecar=ws.sidecar)
         return {"path": str(out)}
 
     @app.get("/api/export/csv")
     def download_csv():
-        out = export_csv(project())
+        out = export_csv(project(), sidecar=ws.sidecar)
         return FileResponse(out, media_type="text/csv", filename=out.name)
+
+    @app.post("/api/capture")
+    def capture(data: dict = Body(...)):
+        p = project()
+        captures_dir = p.root / "captures"
+        captures_dir.mkdir(parents=True, exist_ok=True)
+        filename = data.get("filename") or "capture.jpg"
+        safe_name = Path(filename).name
+        if not safe_name.lower().endswith((".jpg", ".jpeg", ".png")):
+            safe_name += ".jpg"
+        target = captures_dir / safe_name
+        stem = target.stem
+        suffix = target.suffix
+        counter = 1
+        while target.exists():
+            target = captures_dir / f"{stem}_{counter}{suffix}"
+            counter += 1
+        raw_b64 = data.get("image", "")
+        if "," in raw_b64:
+            raw_b64 = raw_b64.split(",", 1)[1]
+        image_bytes = base64.b64decode(raw_b64)
+        target.write_bytes(image_bytes)
+        return {"path": str(target), "filename": target.name, "relative": f"captures/{target.name}"}
 
     # ---- REST events ---------------------------------------------------------------------
 
