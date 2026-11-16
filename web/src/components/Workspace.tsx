@@ -3,18 +3,30 @@ import { api, ApiError, type EventResult } from "../api";
 import { useI18n } from "../i18n";
 import type { ColorAdjust, Detection, FileDetail, Filter, Guide, Info, Palette, Project, ReviewPosition, RestEvent, Row, ShapeKind, VideoInfo } from "../types";
 import { useToast } from "../ui";
+import { DELETED, ENTERED, type TreeData } from "../tree";
 import { DataPanel, isTrue, speciesChange } from "./DataPanel";
+import { FileTree } from "./FileTree";
 import { RecognitionDialog, SettingsDialog, ShortcutsDialog } from "./Dialogs";
 import { Grid } from "./Grid";
 import { Spreadsheet } from "./Spreadsheet";
 import { ColorPanel, EventPanel, GuidePanel } from "./Panels";
 import { ChoiceDialog } from "./Dialogs";
-import { NEUTRAL_COLOR, Timeline, Viewer, type Segment, type ViewerHandle } from "./Viewer";
+import { NEUTRAL_COLOR, Transport, Viewer, type Segment, type ViewerHandle } from "./Viewer";
 
 const isTyping = (target: EventTarget | null) =>
   target instanceof HTMLElement && (["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName) || target.isContentEditable);
 
 const PLAYBACK_RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+
+// The left pane: its width and what is folded are per-browser conveniences.
+const LEFT_MIN = 160, LEFT_MAX = 520, LEFT_DEFAULT = 216;
+const clampLeft = (px: number) => Math.round(Math.max(LEFT_MIN, Math.min(LEFT_MAX, px)));
+const stored = (key: string): string | null => {
+  try { return localStorage.getItem(key); } catch { return null; }
+};
+const store = (key: string, value: string) => {
+  try { localStorage.setItem(key, value); } catch { /* storage unavailable */ }
+};
 
 export function Workspace({ info, project, setProject, active, onOpenProject }: {
   info: Info; project: Project; setProject: (p: Project) => void; active: boolean; onOpenProject: () => void;
@@ -39,6 +51,10 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const [view, setView] = useState<"viewer" | "grid" | "table">(resume.current?.view ?? "viewer");
   const allRecords = view === "table";
   const [detail, setDetail] = useState<FileDetail | null>(null);
+  // The file position (ids[index]) the detail was loaded for. A sibling event row of the same
+  // file has its own position in the all-records list, so `detail.sameFileRows` cannot tell
+  // "picked with the record chip" from "moved onto the sibling row and still loading".
+  const [detailFor, setDetailFor] = useState<number | null>(null);
   const [videoInfo, setVideoInfo] = useState<VideoInfo | null>(null);
   const [videoInfoId, setVideoInfoId] = useState<number | null>(null);
   const frameRef = useRef(0);
@@ -56,12 +72,28 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   const [color, setColor] = useState<ColorAdjust>(NEUTRAL_COLOR);
   const [dialog, setDialog] = useState<null | "settings" | "shortcuts" | "recognitions">(null);
   const [menuOpen, setMenuOpen] = useState(false);
+  const [exportOpen, setExportOpen] = useState(false);
+  const closeMenus = () => { setMenuOpen(false); setExportOpen(false); };
+  const [pop, setPop] = useState<null | "color" | "guide">(null);
+  const [selectedEvent, setSelectedEvent] = useState<number | null>(null);
   const [palette, setPalette] = useState<Palette>(project.settings.palette ?? { items: [], single: false });
   const [canUndo, setCanUndo] = useState(project.canUndo);
   const [canRedo, setCanRedo] = useState(project.canRedo);
   const [playbackRate, setPlaybackRate] = useState(1);
+  const [tree, setTree] = useState<TreeData | null>(null);
+  const [leftWidth, setLeftWidth] = useState(() => clampLeft(Number(stored("kemomichi.left.width")) || LEFT_DEFAULT));
+  const [leftHidden, setLeftHidden] = useState(() => stored("kemomichi.left.hidden") === "1");
+  const [filesOpen, setFilesOpen] = useState(() => stored("kemomichi.left.files") !== "0");
+  const [filtersOpen, setFiltersOpen] = useState(() => stored("kemomichi.left.filters") !== "0");
+  useEffect(() => {
+    store("kemomichi.left.width", String(leftWidth));
+    store("kemomichi.left.hidden", leftHidden ? "1" : "0");
+    store("kemomichi.left.files", filesOpen ? "1" : "0");
+    store("kemomichi.left.filters", filtersOpen ? "1" : "0");
+  }, [leftWidth, leftHidden, filesOpen, filtersOpen]);
 
   const handleCapture = async () => {
+    const detail = currentDetail;
     if (!detail) return;
     try {
       const dataUrl = await viewerRef.current?.capture();
@@ -197,21 +229,83 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     need(ids.slice(Math.max(0, index - 20), index + 40));
   }, [ids, index, need]);
 
+  // ---- file tree (left pane) ------------------------------------------------------------
+  // One entry per file whatever the view; reloaded whenever the list of files is (a new filter
+  // or view arrives here as a new `ids`), and when the species that count as "entered" change.
+  const treeRequest = useRef(0);
+  useEffect(() => {
+    const request = ++treeRequest.current;
+    api.tree(filter, allRecords).then((data) => { if (request === treeRequest.current) setTree(data); }).catch(toast.error);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [ids, duplicates, palette, toast.error]);
+
+  // A row the page holds is fresher than the listing: a species just entered shows at once.
+  const treeState = useCallback((id: number, state: number) => {
+    const row = rowsRef.current.get(id);
+    if (!row) return state;
+    return (palette.items.some((i) => isTrue(row.values[i.flag])) ? ENTERED : 0) | (isTrue(row.values.DeleteFlag) ? DELETED : 0);
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [palette, rowsVersion]);
+  // Another record of the file may be current (a record tab, a table row); the tree marks the file.
+  const treeCurrent = useMemo(() => {
+    if (currentId === null || !tree) return null;
+    const direct = duplicates[String(currentId)] ?? currentId;
+    if (tree.files.some((f) => f[0] === direct)) return direct;
+    const row = rowsRef.current.get(currentId);
+    if (!row) return null;
+    const folderAt = tree.folders.indexOf((row.values.RelativePath ?? "").replace(/^\\+|\\+$/g, ""));
+    return tree.files.find((f) => f[1] === folderAt && f[2] === row.values.File)?.[0] ?? null;
+    /* eslint-disable-next-line react-hooks/exhaustive-deps */
+  }, [currentId, tree, duplicates, rowsVersion]);
+  const openFromTree = (id: number, activate: boolean) => {
+    const at = ids.indexOf(id);
+    if (at < 0) return;
+    setIndex(at);
+    if (activate) setView("viewer");
+  };
+  const startResize = (e: React.PointerEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    const bar = e.currentTarget;
+    const left = bar.parentElement!.getBoundingClientRect().left;
+    // Captured, so the drag goes on over the viewer and ends cleanly if the pointer is taken away.
+    try { bar.setPointerCapture(e.pointerId); } catch { /* an old browser: the bar still follows while over it */ }
+    const ends = ["pointerup", "pointercancel", "lostpointercapture"];
+    const move = (ev: PointerEvent) => setLeftWidth(clampLeft(ev.clientX - left));
+    const stop = () => {
+      bar.removeEventListener("pointermove", move);
+      ends.forEach((name) => bar.removeEventListener(name, stop));
+    };
+    bar.addEventListener("pointermove", move);
+    ends.forEach((name) => bar.addEventListener(name, stop));
+  };
+
+  // Only the latest request may set the detail, and only while the same file is current: an
+  // older response arriving late would put another file's record on screen (and make writes
+  // go to it). Callers that run after an await read the current file from the ref, not from
+  // their closure, so they cannot cancel the load of a file the user has moved on to.
+  const currentIdRef = useRef(currentId);
+  currentIdRef.current = currentId;
+  const detailRequest = useRef(0);
   const loadDetail = useCallback(async (id: number | null) => {
+    const request = ++detailRequest.current;
+    const forId = currentIdRef.current;
     if (id === null) {
       setDetail(null);
+      setDetailFor(null);
       return;
     }
     try {
       const d = await api.file(id);
+      if (request !== detailRequest.current || forId !== currentIdRef.current) return;
       setDetail(d);
+      setDetailFor(forId);
       storeRows([{ id: d.id, values: d.values }]);
     } catch (e) {
       toast.error(e);
     }
   }, [storeRows, toast.error]);
 
-  useEffect(() => { loadDetail(currentId); }, [currentId, loadDetail]);
+  useEffect(() => { loadDetail(currentId); setSelectedEvent(null); }, [currentId, loadDetail]);
 
   useEffect(() => {
     let cancelled = false;
@@ -249,7 +343,10 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
 
   // ---- writing --------------------------------------------------------------------------
   // The record on screen: the file's own row, or one of its event rows picked with the record chip.
-  const recordId = detail?.id ?? currentId;
+  // Until the current file's detail has loaded, `detail` may still be the previous position's:
+  // it counts only when it was loaded for the current position.
+  const currentDetail = detail && currentId !== null && detailFor === currentId ? detail : null;
+  const recordId = currentDetail?.id ?? currentId;
   const targets = (): number[] => (view === "grid" && selection.size > 1 ? [...selection] : recordId !== null ? [recordId] : []);
 
   const write = useCallback(async (fileIds: number[], values: Record<string, string>) => {
@@ -280,12 +377,13 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   };
 
   const history = async (redo: boolean) => {
+    const startedOn = currentIdRef.current;
     try {
       const result = redo ? await api.redo() : await api.undo();
       storeRows(result.rows);
       setCanUndo(result.canUndo);
       setCanRedo(result.canRedo);
-      if (recordId !== null && result.fileIds.includes(recordId)) loadDetail(recordId);
+      if (currentIdRef.current === startedOn && recordId !== null && result.fileIds.includes(recordId)) loadDetail(recordId);
     } catch (e) {
       toast.error(e);
     }
@@ -311,9 +409,9 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   };
 
   const duplicateRecord = async () => {
-    if (!detail || project.readOnly) return;
+    if (!currentDetail || project.readOnly) return;
     try {
-      const res = await api.duplicateFile(detail.id);
+      const res = await api.duplicateFile(currentDetail.id);
       toast.push("success", t("data.duplicated"));
       const newIds = await api.ids(filter, allRecords);
       setIds(newIds);
@@ -329,7 +427,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   };
 
   // ---- REST events (entry to exit, possibly across files) --------------------------------
-  const frameNow = () => (detail?.kind === "video" ? viewerRef.current?.currentFrame() ?? 0 : null);
+  const frameNow = () => (currentDetail?.kind === "video" ? viewerRef.current?.currentFrame() ?? 0 : null);
 
   const applyEventResult = useCallback(async (result: EventResult) => {
     storeRows(result.rows);
@@ -337,26 +435,26 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     setDuplicates(result.duplicates);
     if (result.warning) toast.push("warning", t(result.warning));
     // Rows may have been added or removed (one row per event), so refresh the list and this file.
-    await reloadIds(currentId);
-    if (currentId !== null) loadDetail(currentId);
-  }, [storeRows, toast, t, reloadIds, currentId, loadDetail]);
+    await reloadIds(currentIdRef.current);
+    loadDetail(currentIdRef.current);
+  }, [storeRows, toast, t, reloadIds, loadDetail]);
 
   const choose = (title: string, options: { value: string; label: string }[]) =>
     new Promise<string | null>((resolve) => setChooser({ title, options, resolve }));
 
   const startEvent = async (inside: boolean) => {
-    if (!detail || project.readOnly) return;
-    const row = rowsRef.current.get(detail.id);
+    if (!currentDetail || project.readOnly) return;
+    const row = rowsRef.current.get(currentDetail.id);
     const on = palette.items.filter((i) => row && isTrue(row.values[i.flag]));
     // Skip the question only for a file's first event with exactly one species on; afterwards the row's
     // species may just be the previous event's, so always ask.
-    let species = on.length === 1 && detail.events.length === 0 ? on[0].flag : null;
+    let species = on.length === 1 && currentDetail.events.length === 0 ? on[0].flag : null;
     if (species === null && palette.items.length) {
       species = await choose(t("event.chooseSpecies"), palette.items.map((i) => ({ value: i.flag, label: flagLabel(i.flag) })));
       if (species === null) return;
     }
     try {
-      await applyEventResult(await api.startEvent({ fileId: detail.id, frame: inside ? null : frameNow(), inside,
+      await applyEventResult(await api.startEvent({ fileId: currentDetail.id, frame: inside ? null : frameNow(), inside,
                                                     species: species ?? "" }));
     } catch (e) {
       toast.error(e);
@@ -364,7 +462,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
   };
 
   const endEvent = async (inside: boolean, target?: RestEvent) => {
-    if (!detail || project.readOnly) return;
+    if (!currentDetail || project.readOnly) return;
     let event = target ?? null;
     if (!event) {
       if (openEvents.length === 0) {
@@ -376,7 +474,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
         const picked = await choose(t("event.chooseOpen"), openEvents.map((e) => ({
           value: String(e.id),
           label: `${flagLabel(e.species) || "—"} #${e.individual} · ${e.startFile}`
-            + (e.start_inside ? ` · ${t("event.keyShiftS")}` : ` · ${e.entrySeconds ?? ""}s`),
+            + (e.start_inside ? ` · ${t("event.fromStart")}` : ` · ${e.entrySeconds ?? ""}s`),
         })));
         if (picked === null) return;
         event = openEvents.find((e) => String(e.id) === picked) ?? null;
@@ -384,7 +482,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     }
     if (!event) return;
     try {
-      await applyEventResult(await api.endEvent(event.id, { fileId: detail.id, frame: inside ? null : frameNow(), inside }));
+      await applyEventResult(await api.endEvent(event.id, { fileId: currentDetail.id, frame: inside ? null : frameNow(), inside }));
     } catch (e) {
       toast.error(e);
     }
@@ -426,7 +524,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
         const endsHere = e.end_file_id !== null && mine.has(e.end_file_id);
         const start = startsHere ? (e.start_inside ? 0 : e.start_frame ?? 0) : 0;
         const end = e.open ? null : endsHere ? (e.end_inside ? last : e.end_frame ?? last) : last;
-        return { key: e.id, start, end, label: `#${e.individual} ${flagLabel(e.species)}`,
+        return { key: e.id, start, end, label: `#${e.individual} ${flagLabel(e.species)}${end === null ? ` · ${t("event.open")}` : ""}`,
                  carriedIn: !startsHere || e.start_inside, carriedOut: !e.open && !endsHere };
       });
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -439,7 +537,8 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     const item = palette.items.find((i) => i.key === key);
     if (!item || project.readOnly) return;
     const ids_ = targets();
-    if (!ids_.length) return;
+    // One file: wait for its record, as the palette buttons do (they are disabled until then).
+    if (!ids_.length || (ids_.length === 1 && !currentDetail)) return;
     const row = ids_.length === 1 ? rowsRef.current.get(ids_[0]) ?? null : null;
     const on = row ? !isTrue(row.values[item.flag]) : true;
     change(speciesChange(palette, row, item.flag, on));
@@ -458,6 +557,11 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
       if (mod && e.key.toLowerCase() === "y") {
         e.preventDefault();
         history(true);
+        return;
+      }
+      if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === "b") {
+        e.preventDefault();
+        setLeftHidden((v) => !v);
         return;
       }
       if (mod || e.altKey) return;
@@ -493,7 +597,7 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
           if (currentRow) change({ DeleteFlag: isTrue(currentRow.values.DeleteFlag) ? "false" : "true" });
           break;
         case "?": setDialog("shortcuts"); break;
-        case "Escape": setDrawing(null); break;
+        case "Escape": setDrawing(null); setPop(null); closeMenus(); break;
         default:
           if (/^[0-9]$/.test(e.key)) toggleSpecies(e.key);
       }
@@ -541,90 +645,135 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
     (d.classification ? project.categories.classification[d.classification] : undefined) ??
     project.categories.detection[d.category] ?? d.category;
 
-  const folderTree = useMemo(() => {
-    const nodes = new Map<string, number>();
-    for (const f of project.folders) {
-      const parts = f.path ? f.path.split("\\") : [];
-      for (let i = 1; i <= parts.length; i++) {
-        const key = parts.slice(0, i).join("\\");
-        nodes.set(key, (nodes.get(key) ?? 0) + f.count);
-      }
-    }
-    return [...nodes.entries()].sort(([a], [b]) => a.localeCompare(b));
-  }, [project.folders]);
 
   const total = ids.length;
+  const activeFilters = [filter.folder, filter.text, filter.deleted, filter.detection, filter.anyTrue?.length, filter.allFalse?.length]
+    .filter(Boolean).length;
   const bulkCount = view === "grid" ? selection.size : 0;
   const frameTimes = videoInfo?.frameTimes ?? [];
   void rowsVersion;
+
+  const exportTo = async (kind: "csv" | "events") => {
+    closeMenus();
+    try {
+      const { path } = kind === "csv" ? await api.exportCsv() : await api.exportEvents();
+      toast.push("success", t("csv.done", { path }));
+    } catch (e) { toast.error(e); }
+  };
+  const noEvent = project.readOnly || !currentDetail;
+  const eventButtons = (
+    <>
+      <span className="split">
+        <button type="button" className="btn" disabled={noEvent} onClick={() => startEvent(false)}
+                title={`${t("event.entry")} (S)`}>{t("event.entry")} <kbd>S</kbd></button>
+        <button type="button" className="btn" disabled={noEvent} onClick={() => startEvent(true)}
+                title="Shift+S">{t("event.fromStart")}</button>
+      </span>
+      <span className="split">
+        <button type="button" className="btn" disabled={noEvent} onClick={() => endEvent(false)}
+                title={`${t("event.exit")} (E)`}>{t("event.exit")} <kbd>E</kbd></button>
+        <button type="button" className="btn" disabled={noEvent} onClick={() => endEvent(true)}
+                title="Shift+E">{t("event.toEnd")}</button>
+      </span>
+    </>
+  );
+  const selectSegment = (key: number) => {
+    setSelectedEvent(key);
+    const e = [...(detail?.events ?? []), ...openEvents].find((x) => x.id === key);
+    if (e) jumpEvent(e, "start");
+  };
+  const records = detail ? (detail.sameFileRows.length ? detail.sameFileRows : [detail.id]) : [];
 
   return (
     <div className="app">
       <header className="topbar">
         <span className="brand">{t("app.name")}</span>
         <span className="project" title={project.path}>{project.name}</span>
-        <span className="spacer" />
-        <span className={`tag${saving ? " saving" : ""}`}>
+        <span className={`tag${saving ? " saving" : ""}`} role="status" data-testid="save-state">
           {project.readOnly ? t("top.readOnly") : saving ? t("top.saving") : t("top.saved")}
         </span>
-        <button className="icon-btn" disabled={!canUndo || project.readOnly} onClick={() => history(false)} title={`${t("top.undo")} (Ctrl+Z)`}>↶ {t("top.undo")}</button>
-        <button className="icon-btn" disabled={!canRedo || project.readOnly} onClick={() => history(true)} title={`${t("top.redo")} (Ctrl+Shift+Z)`}>↷</button>
-        <span className="lang">{info.serverMode ? t("top.server", { host: location.host }) : t("top.thisPc")}</span>
-        <button className="icon-btn lang" onClick={() => setLang(lang === "ja" ? "en" : "ja")} aria-label={t("settings.language")}>
-          {lang === "ja" ? "日本語 / EN" : "EN / 日本語"}
-        </button>
-        <button className="icon-btn" aria-haspopup="menu" aria-expanded={menuOpen} onClick={() => setMenuOpen((v) => !v)}>
-          {t("top.menu")} ▾
-        </button>
-        {menuOpen && (
-          <div className="menu" role="menu" onMouseLeave={() => setMenuOpen(false)}>
-            <button role="menuitem" disabled={saving > 0} onClick={() => { setMenuOpen(false); onOpenProject(); }}>{t("menu.open")}</button>
-            <button role="menuitem" disabled={project.readOnly || !detail || bulkCount > 1} onClick={() => { setMenuOpen(false); void duplicateRecord(); }}>{t("data.duplicate")}</button>
-            <button role="menuitem" disabled={project.readOnly} onClick={() => { setMenuOpen(false); setDialog("recognitions"); }}>{t("menu.importRecognitions")}</button>
-            <button role="menuitem" onClick={async () => {
-              setMenuOpen(false);
-              try { toast.push("success", t("csv.done", { path: (await api.exportCsv()).path })); } catch (e) { toast.error(e); }
-            }}>{t("menu.exportCsv")}</button>
-            <button role="menuitem" onClick={async () => {
-              setMenuOpen(false);
-              try { toast.push("success", t("csv.done", { path: (await api.exportEvents()).path })); } catch (e) { toast.error(e); }
-            }}>{t("menu.exportEvents")}</button>
-            <button role="menuitem" onClick={() => { setMenuOpen(false); setDialog("settings"); }}>{t("menu.settings")}</button>
-            <button role="menuitem" onClick={() => { setMenuOpen(false); setDialog("shortcuts"); }}>{t("menu.shortcuts")}</button>
-          </div>
-        )}
+        <button className="ib" disabled={!canUndo || project.readOnly} onClick={() => history(false)}
+                aria-label={t("top.undo")} title={`${t("top.undo")} (Ctrl+Z)`}>↶</button>
+        <button className="ib" disabled={!canRedo || project.readOnly} onClick={() => history(true)}
+                aria-label={t("top.redo")} title={`${t("top.redo")} (Ctrl+Shift+Z)`}>↷</button>
+        <span className="spacer" />
+        <span className="anchor">
+          <button className="btn main small" aria-haspopup="menu" aria-expanded={exportOpen}
+                  onClick={() => { setMenuOpen(false); setExportOpen((v) => !v); }}>{t("top.export")} ▾</button>
+          {exportOpen && (
+            <div className="menu" role="menu" onMouseLeave={() => setExportOpen(false)}>
+              <button role="menuitem" onClick={() => exportTo("csv")}>{t("menu.exportCsv")}</button>
+              <button role="menuitem" onClick={() => exportTo("events")}>{t("menu.exportEvents")}</button>
+            </div>
+          )}
+        </span>
+        <span className="anchor">
+          <button className="ib" aria-haspopup="menu" aria-expanded={menuOpen} aria-label={t("top.more")} title={t("top.more")}
+                  onClick={() => { setExportOpen(false); setMenuOpen((v) => !v); }}>⋯</button>
+          {menuOpen && (
+            <div className="menu" role="menu" onMouseLeave={() => setMenuOpen(false)}>
+              <button role="menuitem" disabled={saving > 0} onClick={() => { closeMenus(); onOpenProject(); }}>{t("menu.open")}</button>
+              <button role="menuitem" disabled={project.readOnly || !currentDetail || bulkCount > 1} onClick={() => { closeMenus(); void duplicateRecord(); }}>{t("data.duplicate")}</button>
+              <button role="menuitem" disabled={project.readOnly} onClick={() => { closeMenus(); setDialog("recognitions"); }}>{t("menu.importRecognitions")}</button>
+              <hr />
+              <button role="menuitem" onClick={() => { closeMenus(); setDialog("settings"); }}>{t("menu.settings")}</button>
+              <button role="menuitem" onClick={() => { closeMenus(); setDialog("shortcuts"); }}>{t("menu.shortcuts")}</button>
+              <button role="menuitem" onClick={() => setLang(lang === "ja" ? "en" : "ja")}>{lang === "ja" ? "English" : "日本語"}</button>
+              <hr />
+              <div className="menu-note">{info.serverMode ? t("top.server", { host: location.host }) : t("top.thisPc")}</div>
+            </div>
+          )}
+        </span>
       </header>
       {project.readOnly && <div className="ro-banner">! {t(project.readOnlyReason || "readOnly.requested")}</div>}
 
-      <div className="panes">
-        <aside className="pane left" aria-label={t("nav.folders")}>
-          <div className="pane-head">{t("nav.folders")}</div>
-          <div className="pane-body tree">
-            <button aria-current={!filter.folder} onClick={() => setFilter({ ...filter, folder: undefined })}>
-              {t("nav.all")} <span className="count">{project.total}</span>
-            </button>
-            {folderTree.map(([path, count]) => {
-              const depth = path.split("\\").length - 1;
-              return (
-                <button key={path} aria-current={filter.folder === path} style={{ paddingLeft: 6 + depth * 14 }}
-                        onClick={() => setFilter({ ...filter, folder: path })}>
-                  {path.split("\\").pop()} <span className="count">{count}</span>
-                </button>
-              );
-            })}
-          </div>
-          <div className="pane-head">{t("nav.filters")}<span className="sub">{t("filter.count", { count: total })}</span></div>
+      <div className={"panes" + (leftHidden ? " left-hidden" : "")} style={{ "--km-left": `${leftWidth}px` } as React.CSSProperties}>
+        {leftHidden ? (
+          <aside className="pane left rail" aria-label={t("nav.find")}>
+            <button className="icon-btn" aria-label={t("nav.show")} title={t("nav.show")} onClick={() => setLeftHidden(false)}>»</button>
+          </aside>
+        ) : (
+        <aside className="pane left" aria-label={t("nav.find")}>
+          <section className={"sec files" + (filesOpen ? " unfolded" : "")}>
+            <div className="ph">
+              <button className="sec-toggle" aria-expanded={filesOpen} onClick={() => setFilesOpen((v) => !v)}>
+                <span aria-hidden="true">{filesOpen ? "▾" : "▸"}</span> {t("nav.files")}
+              </button>
+              <span className="cnt" data-testid="match-count">{t("filter.count", { count: total })}</span>
+              <button className="icon-btn small" aria-label={t("nav.hide")} title={t("nav.hide")} onClick={() => setLeftHidden(true)}>«</button>
+            </div>
+            {filesOpen && (
+              <FileTree data={tree} currentId={treeCurrent} stateOf={treeState}
+                        storageKey={`kemomichi.tree.${project.path}`} filterFolder={filter.folder}
+                        onFilterFolder={(path) => setFilter({ ...filter, folder: path })} onOpen={openFromTree} />
+            )}
+          </section>
+          <section className={"sec filters" + (filtersOpen ? " unfolded" : "")}>
+            <div className="ph">
+              <button className="sec-toggle" aria-expanded={filtersOpen} onClick={() => setFiltersOpen((v) => !v)}>
+                <span aria-hidden="true">{filtersOpen ? "▾" : "▸"}</span> {t("nav.filters")}
+              </button>
+              {activeFilters > 0 && <span className="cnt">{t("filter.active", { count: activeFilters })}</span>}
+            </div>
+            {filtersOpen && (
           <div className="pane-body">
+            {filter.folder && (
+              <div className="chips">
+                <button className="chip" aria-pressed="true" onClick={() => setFilter({ ...filter, folder: undefined })}>
+                  {t("filter.folder", { name: filter.folder.split("\\").pop() ?? "" })} ×
+                </button>
+              </div>
+            )}
             <input type="text" placeholder={t("filter.search")} aria-label={t("filter.search")} defaultValue={filter.text ?? ""}
                    onKeyDown={(e) => e.key === "Enter" && setFilter({ ...filter, text: (e.target as HTMLInputElement).value || undefined })}
                    onBlur={(e) => (e.target.value || undefined) !== filter.text && setFilter({ ...filter, text: e.target.value || undefined })} />
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            <div className="chips">
               {palette.items.map((i) => (
                 <button key={i.flag} className="chip" aria-pressed={(filter.anyTrue ?? []).includes(i.flag)}
                         onClick={() => toggleAny(i.flag)}>{flagLabel(i.flag)}</button>
               ))}
             </div>
-            <div style={{ display: "flex", flexWrap: "wrap", gap: 4 }}>
+            <div className="chips">
               <button className="chip" aria-pressed={!!filter.allFalse}
                       onClick={() => setFilter({ ...filter, anyTrue: undefined,
                         allFalse: filter.allFalse ? undefined : palette.items.map((i) => i.flag) })}>
@@ -650,39 +799,33 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
             )}
             <button className="btn text small" onClick={() => setFilter({})} style={{ alignSelf: "flex-start" }}>{t("filter.clear")}</button>
           </div>
+            )}
+          </section>
+          <div className="resizer" role="separator" aria-orientation="vertical" aria-label={t("nav.resize")} tabIndex={0}
+               aria-valuenow={leftWidth} aria-valuemin={LEFT_MIN} aria-valuemax={LEFT_MAX} onPointerDown={startResize}
+               onDoubleClick={() => setLeftWidth(LEFT_DEFAULT)}
+               onKeyDown={(e) => {
+                 if (e.key !== "ArrowLeft" && e.key !== "ArrowRight") return;
+                 e.preventDefault();
+                 e.stopPropagation();
+                 setLeftWidth((w) => clampLeft(w + (e.key === "ArrowRight" ? 16 : -16)));
+               }} />
         </aside>
+        )}
 
         <main className="center">
-          <div className="toolbar">
-            <button className="icon-btn" aria-pressed={view === "viewer"} onClick={() => setView("viewer")}>{t("view.viewer")}</button>
-            <button className="icon-btn" aria-pressed={view === "grid"} onClick={() => setView("grid")}>{t("view.grid")}</button>
-            <button className="icon-btn" aria-pressed={view === "table"} onClick={() => setView("table")}>{t("view.table")}</button>
-            <span className="sep" />
-            <button className="icon-btn" onClick={() => go(-1)} aria-label="previous">←</button>
-            <span className="pos">{t("viewer.position", { index: total ? index + 1 : 0, total })}</span>
-            <button className="icon-btn" onClick={() => go(1)} aria-label="next">→</button>
-            {view === "viewer" && (
-              <>
-                <span className="sep" />
-                <button className="icon-btn" aria-pressed={showGuides} onClick={() => setShowGuides((v) => !v)}>{t("viewer.guides")}</button>
-                {project.hasRecognitions && (
-                  <button className="icon-btn" aria-pressed={showBoxes} onClick={() => setShowBoxes((v) => !v)}>{t("viewer.bboxes")}</button>
-                )}
-                <button className="icon-btn" onClick={() => viewerRef.current?.fit()}>{t("viewer.fit")}</button>
-                <button className="icon-btn" onClick={handleCapture} title={`${t("viewer.capture")} (C)`}>📷 {t("viewer.capture")}</button>
-              </>
-            )}
-            <span style={{ flex: 1 }} />
-            {detail && detail.sameFileRows.length > 1 && (
-              <button className="chip" title={t("event.rowHint")} aria-label={t("event.rowNext")}
-                      onClick={() => {
-                        const rows = detail.sameFileRows;
-                        loadDetail(rows[(rows.indexOf(detail.id) + 1) % rows.length]);
-                      }}>
-                {t("event.rowOf", { n: detail.sameFileRows.indexOf(detail.id) + 1, total: detail.sameFileRows.length })}
-              </button>
-            )}
-            {currentRow && <span className="pos" title={currentRow.values.RelativePath}>{currentRow.values.File} · {currentRow.values.DateTime}</span>}
+          <div className="cbar">
+            <div className="seg" role="group" aria-label={t("view.label")}>
+              <button aria-pressed={view === "viewer"} onClick={() => setView("viewer")}>{t("view.viewer")}</button>
+              <button aria-pressed={view === "grid"} onClick={() => setView("grid")}>{t("view.grid")}</button>
+              <button aria-pressed={view === "table"} onClick={() => setView("table")}>{t("view.table")}</button>
+            </div>
+            <div className="nav">
+              <button className="icon-btn" onClick={() => go(-1)} disabled={index <= 0} aria-label={t("video.prevFile")}>←</button>
+              <span className="pos" data-testid="position">{t("viewer.position", { index: total ? index + 1 : 0, total })}</span>
+              <button className="icon-btn" onClick={() => go(1)} disabled={index >= total - 1} aria-label={t("video.nextFile")}>→</button>
+            </div>
+            {currentRow && <span className="fname" title={currentRow.values.RelativePath} data-testid="file-name">{currentRow.values.File} · {currentRow.values.DateTime}</span>}
           </div>
           {view === "grid" ? (
             <Grid mediaSession={mediaSession} ids={ids} rows={rowsRef.current} need={need} selection={selection} currentId={currentId}
@@ -710,76 +853,119 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
             />
           ) : (
             <>
-              <Viewer key={detail?.id ?? "empty"} ref={viewerRef} mediaSession={mediaSession} detail={detail}
-                      initialFrame={positionRef.current?.fileId === detail?.id ? (positionRef.current?.frame ?? 0) : 0}
-                      onPositionCommit={() => savePosition()}
-                      missingPath={currentRow ? `${currentRow.values.RelativePath}\\${currentRow.values.File}` : ""}
-                      color={color} compare={compare}
-                      guides={folderGuides.guides} showGuides={showGuides}
-                      detections={detail?.detections ?? []} showBoxes={showBoxes} boxThreshold={threshold}
-                      categoryLabel={categoryLabel}
-                      drawing={drawing}
-                      onDrawn={(shape, points) => {
-                        const name = `${t(`guide.${shape}`)} ${folderGuides.guides.length + 1}`;
-                        saveGuides([...folderGuides.guides, { id: crypto.randomUUID?.() ?? String(Date.now()), shape, points, name, color: "#FFFFFF", width: 2 }]);
-                        setDrawing(null);
-                      }}
-                      videoInfo={videoInfoId === detail?.id ? videoInfo : null}
-                      playbackRate={playbackRate}
-                      onFrame={(f) => {
-                        frameRef.current = f;
-                        if (positionRef.current && positionRef.current.fileId === detail?.id) positionRef.current.frame = f;
-                      }} />
-              {detail?.kind === "video" && (
-                videoInfo?.available === false ? <div className="timeline">{t("video.noFfmpeg")}</div>
-                : !videoInfo ? <div className="timeline">{t("video.loading")}</div>
-                : <FrameTimeline viewerRef={viewerRef} frameTimes={frameTimes} exact={!!videoInfo.exactTimes}
-                                 segments={segments}
-                                 playbackRate={playbackRate} onPlaybackRateChange={setPlaybackRate} />
+              <div className="stagewrap">
+                <div className="tools" role="toolbar" aria-label={t("viewer.tools")}>
+                  <button onClick={() => viewerRef.current?.fit()} title={`${t("viewer.fit")} (F)`}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9V4h5M20 9V4h-5M4 15v5h5M20 15v5h-5" /></svg>{t("viewer.fit")}
+                  </button>
+                  <button aria-expanded={pop === "color"} onClick={() => setPop((p) => (p === "color" ? null : "color"))}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="4" /><path d="M12 2v3M12 19v3M2 12h3M19 12h3M5 5l2 2M17 17l2 2M19 5l-2 2M7 17l-2 2" /></svg>{t("viewer.color")}
+                  </button>
+                  <button aria-expanded={pop === "guide"} onClick={() => setPop((p) => (p === "guide" ? null : "guide"))}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 18L21 6" /><circle cx="3" cy="18" r="1.5" /><circle cx="21" cy="6" r="1.5" /></svg>{t("viewer.guides")}
+                  </button>
+                  {project.hasRecognitions && (
+                    <button aria-pressed={showBoxes} onClick={() => setShowBoxes((v) => !v)} title={`${t("viewer.bboxes")} (B)`}>
+                      <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="4" y="6" width="16" height="12" strokeDasharray="3 2" /></svg>{t("viewer.bboxes")}
+                    </button>
+                  )}
+                  <hr />
+                  <button onClick={handleCapture} title={`${t("viewer.capture")} (C)`}>
+                    <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="7" width="18" height="13" rx="2" /><circle cx="12" cy="13.5" r="3.5" /><path d="M8 7l2-3h4l2 3" /></svg>{t("viewer.capture")}
+                  </button>
+                </div>
+                <Viewer key={detail?.id ?? "empty"} ref={viewerRef} mediaSession={mediaSession} detail={detail}
+                        initialFrame={positionRef.current?.fileId === detail?.id ? (positionRef.current?.frame ?? 0) : 0}
+                        onPositionCommit={() => savePosition()}
+                        missingPath={currentRow ? `${currentRow.values.RelativePath}\\${currentRow.values.File}` : ""}
+                        color={color} compare={compare}
+                        guides={folderGuides.guides} showGuides={showGuides}
+                        detections={detail?.detections ?? []} showBoxes={showBoxes} boxThreshold={threshold}
+                        categoryLabel={categoryLabel}
+                        drawing={drawing}
+                        onDrawn={(shape, points) => {
+                          const name = `${t(`guide.${shape}`)} ${folderGuides.guides.length + 1}`;
+                          saveGuides([...folderGuides.guides, { id: crypto.randomUUID?.() ?? String(Date.now()), shape, points, name, color: "#FFFFFF", width: 2 }]);
+                          setDrawing(null);
+                        }}
+                        videoInfo={videoInfoId === detail?.id ? videoInfo : null}
+                        playbackRate={playbackRate}
+                        onFrame={(f) => {
+                          frameRef.current = f;
+                          if (positionRef.current && positionRef.current.fileId === detail?.id) positionRef.current.frame = f;
+                        }} />
+                {pop === "color" && (
+                  <ColorPanel value={color} onChange={setColor} hasFolderDefault={folderColor !== null} readOnly={project.readOnly}
+                              onClose={() => setPop(null)}
+                              onSaveFolder={async () => {
+                                try {
+                                  await api.setFolderSetting(folder, "color", color);
+                                  setFolderColor(color);
+                                  toast.push("success", t("color.folderSaved"));
+                                } catch (e) { toast.error(e); }
+                              }}
+                              onClearFolder={async () => {
+                                try {
+                                  await api.setFolderSetting(folder, "color", null);
+                                  setFolderColor(null);
+                                } catch (e) { toast.error(e); }
+                              }} />
+                )}
+                {pop === "guide" && (
+                  <GuidePanel guides={folderGuides.guides}
+                              inheritedFrom={folderGuides.source !== null && folderGuides.source !== folder ? folderGuides.source : null}
+                              drawing={drawing} onDraw={setDrawing} show={showGuides} onShow={setShowGuides}
+                              onClose={() => setPop(null)}
+                              onChange={saveGuides} readOnly={project.readOnly} />
+                )}
+              </div>
+              {detail?.kind === "video" && videoInfo && videoInfo.available !== false ? (
+                <FrameTransport viewerRef={viewerRef} frameTimes={frameTimes} exact={!!videoInfo.exactTimes}
+                                segments={segments} selected={selectedEvent} onSelect={selectSegment}
+                                playbackRate={playbackRate} onPlaybackRateChange={setPlaybackRate}
+                                onPrevFile={() => go(-1)} onNextFile={() => go(1)} canPrev={index > 0} canNext={index < total - 1}
+                                eventButtons={eventButtons} />
+              ) : (
+                <Transport message={detail?.kind === "video" ? (videoInfo?.available === false ? t("video.noFfmpeg") : t("video.loading")) : undefined}
+                           onPrevFile={() => go(-1)} onNextFile={() => go(1)} canPrev={index > 0} canNext={index < total - 1}
+                           eventButtons={eventButtons} />
               )}
             </>
           )}
         </main>
 
-        <aside className="pane right" aria-label={t("data.title")}>
-          <div className="pane-head">{t("data.title")}</div>
-          <div className="pane-body">
-            <DataPanel controls={controls} row={detail ? { id: detail.id, values: detail.values } : null}
-                       detail={detail}
-                       palette={palette} locked={locked} readOnly={project.readOnly} bulkCount={bulkCount}
-                       onChange={change} onCopyPrevious={copyPrevious} canCopyPrevious={index > 0}
-                       onDuplicate={duplicateRecord}
-                       afterSpecies={detail && bulkCount <= 1 && (
-                         <EventPanel kind={detail.kind} fileId={detail.sameFileRows[0] ?? detail.id} events={detail.events}
-                                     openEvents={openEvents} speciesLabel={flagLabel} palette={palette.items}
-                                     configured={Object.entries(project.eventColumns ?? {}).some(([k, v]) =>
-                                       ["speciesName", "individual", "entry", "exit", "exitFile", "startInside", "endInside", "duration"].includes(k) && !!v)}
-                                     readOnly={project.readOnly}
-                                     onDelete={(id) => { if (window.confirm(t("event.confirmDelete"))) eventAction(() => api.deleteEvent(id)); }}
-                                     onJump={jumpEvent} onEnd={(e, inside) => endEvent(inside, e)}
-                                     onReopen={(e) => eventAction(() => api.changeEvent(e.id, { reopen: true }))}
-                                     onSpecies={(e, species) => eventAction(() => api.changeEvent(e.id, { species }))}
-                                     onIndividual={(e, individual) => eventAction(() => api.changeEvent(e.id, { individual }))} />
-                       )} />
-            <ColorPanel value={color} onChange={setColor} hasFolderDefault={folderColor !== null} readOnly={project.readOnly}
-                        onSaveFolder={async () => {
-                          try {
-                            await api.setFolderSetting(folder, "color", color);
-                            setFolderColor(color);
-                            toast.push("success", t("color.folderSaved"));
-                          } catch (e) { toast.error(e); }
-                        }}
-                        onClearFolder={async () => {
-                          try {
-                            await api.setFolderSetting(folder, "color", null);
-                            setFolderColor(null);
-                          } catch (e) { toast.error(e); }
-                        }} />
-            <GuidePanel guides={folderGuides.guides}
-                        inheritedFrom={folderGuides.source !== null && folderGuides.source !== folder ? folderGuides.source : null}
-                        drawing={drawing} onDraw={(s) => { setDrawing(s); setView("viewer"); }}
-                        onChange={saveGuides} readOnly={project.readOnly} />
-          </div>
+        <aside className="pane right" aria-label={t("data.record")}>
+          <div className="ph">{t("data.record")}{currentRow && <span className="cnt" title={currentRow.values.RelativePath}>{currentRow.values.File}</span>}</div>
+          {currentDetail && bulkCount <= 1 && (
+            <div className="rtabs" role="tablist" aria-label={t("data.record")}>
+              {records.map((id, i) => (
+                <button key={id} role="tab" aria-selected={id === currentDetail.id} onClick={() => id !== currentDetail.id && loadDetail(id)}>
+                  {t("data.recordN", { n: i + 1 })}
+                </button>
+              ))}
+              <button type="button" disabled={project.readOnly} onClick={() => void duplicateRecord()}
+                      aria-label={t("data.addRecord")} title={t("data.addRecord")}>＋</button>
+            </div>
+          )}
+          <DataPanel controls={controls} row={currentDetail ? { id: currentDetail.id, values: currentDetail.values } : null}
+                     palette={palette} locked={locked} readOnly={project.readOnly} bulkCount={bulkCount}
+                     onChange={change} onCopyPrevious={copyPrevious} canCopyPrevious={index > 0}
+                     onNext={() => go(1)} canNext={index < total - 1}
+                     afterSpecies={currentDetail && bulkCount <= 1 && (
+                       <EventPanel fileId={currentDetail.sameFileRows[0] ?? currentDetail.id} sameFileRows={currentDetail.sameFileRows}
+                                   events={currentDetail.events}
+                                   openEvents={openEvents} speciesLabel={flagLabel} palette={palette.items}
+                                   configured={Object.entries(project.eventColumns ?? {}).some(([k, v]) =>
+                                     ["speciesName", "individual", "entry", "exit", "exitFile", "startInside", "endInside", "duration"].includes(k) && !!v)}
+                                   readOnly={project.readOnly}
+                                   selected={selectedEvent}
+                                   onSelect={(e) => { setSelectedEvent(e.id); jumpEvent(e, "start"); }}
+                                   onDelete={(id) => { if (window.confirm(t("event.confirmDelete"))) eventAction(() => api.deleteEvent(id)); }}
+                                   onJump={jumpEvent} onEnd={(e, inside) => endEvent(inside, e)}
+                                   onReopen={(e) => eventAction(() => api.changeEvent(e.id, { reopen: true }))}
+                                   onSpecies={(e, species) => eventAction(() => api.changeEvent(e.id, { species }))}
+                                   onIndividual={(e, individual) => eventAction(() => api.changeEvent(e.id, { individual }))} />
+                     )} />
         </aside>
       </div>
 
@@ -801,9 +987,12 @@ export function Workspace({ info, project, setProject, active, onOpenProject }: 
 }
 
 /** Keeps its own frame state so the rest of the workspace does not re-render on every frame. */
-function FrameTimeline({ viewerRef, frameTimes, exact, segments, playbackRate, onPlaybackRateChange }: {
+function FrameTransport({ viewerRef, frameTimes, exact, segments, selected, onSelect, playbackRate, onPlaybackRateChange,
+                          onPrevFile, onNextFile, canPrev, canNext, eventButtons }: {
   viewerRef: React.RefObject<ViewerHandle>; frameTimes: number[]; exact: boolean; segments: Segment[];
-  playbackRate?: number; onPlaybackRateChange?: (rate: number) => void;
+  selected: number | null; onSelect: (key: number) => void;
+  playbackRate: number; onPlaybackRateChange: (rate: number) => void;
+  onPrevFile: () => void; onNextFile: () => void; canPrev: boolean; canNext: boolean; eventButtons: React.ReactNode;
 }) {
   const [frame, setFrame] = useState(0);
   const [isPlaying, setIsPlaying] = useState(false);
@@ -820,11 +1009,14 @@ function FrameTimeline({ viewerRef, frameTimes, exact, segments, playbackRate, o
     return () => cancelAnimationFrame(raf);
   }, [viewerRef]);
   return (
-    <Timeline frame={frame} total={frameTimes.length} frameTimes={frameTimes} segments={segments} exact={exact}
-              playbackRate={playbackRate} onPlaybackRateChange={onPlaybackRateChange}
-              isPlaying={isPlaying}
-              onTogglePlay={() => viewerRef.current?.togglePlay()}
-              onStep={(delta) => viewerRef.current?.step(delta)}
-              onSeek={(f) => viewerRef.current?.seekFrame(f)} />
+    <Transport onPrevFile={onPrevFile} onNextFile={onNextFile} canPrev={canPrev} canNext={canNext} eventButtons={eventButtons}
+               video={{
+                 frame, total: frameTimes.length, frameTimes, segments, exact, selected, onSelect,
+                 playbackRate, onPlaybackRateChange, isPlaying,
+                 onSeek: (f) => viewerRef.current?.seekFrame(f),
+                 onTogglePlay: () => viewerRef.current?.togglePlay(),
+                 onStep: (delta) => viewerRef.current?.step(delta),
+                 onStop: () => { viewerRef.current?.pause(); viewerRef.current?.seekFrame(0); },
+               }} />
   );
 }

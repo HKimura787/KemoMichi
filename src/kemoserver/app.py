@@ -5,6 +5,7 @@ from __future__ import annotations
 import base64
 import json
 import shutil
+import sqlite3
 from pathlib import Path
 
 from fastapi import Body, FastAPI, HTTPException, Request
@@ -17,6 +18,7 @@ from kemocore.timelapse import constants as C
 from kemocore.timelapse.create import create_data_file
 from kemocore.timelapse.csv_export import export_csv
 from kemocore.timelapse.project import ProjectError
+from kemocore.timelapse.quick_fields import EVENT_FIELDS, free_key, species_labels, unique_label
 from kemocore.timelapse.recognitions import import_recognitions
 from kemocore.timelapse.template import ValueError_, make_data_label
 from kemocore.timelapse.template_edit import (
@@ -44,6 +46,13 @@ def create_app(config: ServerConfig) -> FastAPI:
     @app.exception_handler(ProjectError)
     async def project_error(_request: Request, exc: ProjectError):
         return JSONResponse(status_code=400, content={"error": exc.key, "params": exc.params})
+
+    @app.exception_handler(sqlite3.ProgrammingError)
+    async def closed_project(_request: Request, exc: sqlite3.ProgrammingError):
+        # A request that was still reading when the project was closed or switched.
+        if "closed database" not in str(exc):
+            raise exc
+        return JSONResponse(status_code=409, content={"error": "error.noProject", "params": {}})
 
     @app.exception_handler(ValueError_)
     async def value_error(_request: Request, exc: ValueError_):
@@ -263,6 +272,16 @@ def create_app(config: ServerConfig) -> FastAPI:
     def file_ids(filter: str | None = None, records: bool = False):
         return project().ids(list_filter(filter, records))
 
+    @app.get("/api/files/tree")
+    def file_tree(filter: str | None = None, records: bool = False):
+        """The file tree of the left pane: one entry per file. `records` as for the list beside it:
+        with it, a file only a duplicated row of which passes the filter is listed too."""
+        palette = ws.sidecar.get("palette") or palette_suggest()
+        items = palette.get("items") if isinstance(palette, dict) else None
+        flags = [item["flag"] for item in (items if isinstance(items, list) else [])
+                 if isinstance(item, dict) and isinstance(item.get("flag"), str) and item["flag"]]
+        return project().tree(list_filter(filter, records), flags)
+
     @app.get("/api/files/{file_id}")
     def file_detail(file_id: int):
         p = project()
@@ -437,7 +456,7 @@ def create_app(config: ServerConfig) -> FastAPI:
             taken.add(data_label)
             new.append({"type": C.COUNTER, "label": f"{control.label}{labelSuffix}", "dataLabel": data_label,
                         "flag": flag})
-        template = p.find_template()
+        template = p.find_template(strict=True)
         p.add_controls(new, template)
         palette = ws.sidecar.get("palette") or palette_suggest()
         by_flag = {n["flag"]: n["dataLabel"] for n in new}
@@ -447,6 +466,69 @@ def create_app(config: ServerConfig) -> FastAPI:
         ws.sidecar.set("palette", palette)
         result = project_payload()
         result["templateUpdated"] = template is not None
+        return result
+
+    @app.post("/api/template/species")
+    def add_species(name: str = Body(...), counter: bool = Body(True), countSuffix: str = Body(" count")):
+        """A new species from nothing: a Flag field, its count field, and a place in the palette."""
+        p = project()
+        name = " ".join(name.split())
+        if not name:
+            raise HTTPException(422, detail={"error": "error.nameRequired"})
+        if any(c.label.casefold() == name.casefold() or c.data_label.casefold() == name.casefold()
+               for c in p.controls):
+            raise HTTPException(400, detail={"error": "error.duplicateField", "params": {"field": name}})
+        flag, count = species_labels(name, set(p.by_label), counter)
+        new = [{"type": C.FLAG, "label": name, "dataLabel": flag}]
+        if count:
+            new.append({"type": C.COUNTER, "label": f"{name}{countSuffix}", "dataLabel": count})
+        template = p.find_template(strict=True)
+        p.add_controls(new, template)
+        palette = ws.sidecar.get("palette")
+        if not isinstance(palette, dict):
+            palette = palette_suggest()
+        # A palette edited by hand may hold anything: keep only what is a species entry.
+        saved = palette.get("items")
+        items = [i for i in (saved if isinstance(saved, list) else [])
+                 if isinstance(i, dict) and isinstance(i.get("flag"), str) and i["flag"] != flag]
+        items.append({"flag": flag, "counter": count, "key": free_key(items)})
+        palette["items"] = items
+        ws.sidecar.set("palette", palette)
+        result = project_payload()
+        result["templateUpdated"] = template is not None
+        result["added"] = {"flag": flag, "counter": count}
+        return result
+
+    @app.post("/api/template/event-columns")
+    def add_event_columns(labels: dict[str, str] = Body(default_factory=dict), keys: list[str] | None = Body(None)):
+        """Create a field for stay-event values and point each value at its new field.
+
+        `keys` names the values to create (what the settings screen shows as unset, saved or not);
+        without it, every value whose saved field is missing gets one.
+        """
+        p = project()
+        current = events.column_settings(ws.sidecar)
+        taken = set(p.by_label)
+        new, chosen = [], {}
+        unknown = [k for k in keys or [] if k not in EVENT_FIELDS]
+        if unknown:
+            raise HTTPException(400, detail={"error": "error.unknownField", "params": {"field": unknown[0]}})
+        for key, (ctype, data_label, english) in EVENT_FIELDS.items():
+            if (key not in keys) if keys is not None else (current[key] in p.by_label):
+                continue
+            data_label = unique_label(data_label, taken)
+            taken.add(data_label)
+            chosen[key] = data_label
+            new.append({"type": ctype, "label": (labels.get(key) or "").strip() or english,
+                        "dataLabel": data_label, "default": C.FALSE if ctype == C.FLAG else ""})
+        template = p.find_template(strict=True)
+        if new:
+            p.add_controls(new, template)
+            ws.sidecar.set(events.SETTINGS_KEY, {**(ws.sidecar.get(events.SETTINGS_KEY) or {}), **chosen})
+            events.resync_all(p, ws.sidecar)
+        result = project_payload()
+        result["templateUpdated"] = template is not None
+        result["added"] = chosen
         return result
 
     # ---- recognitions and export ---------------------------------------------------------

@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { ApiError } from "../api";
 import { useI18n } from "../i18n";
-import type { Control, FileDetail, Palette, Row } from "../types";
+import type { Control, Palette, Row } from "../types";
 
 const TRUE = "true";
 
@@ -29,10 +29,10 @@ export function speciesChange(palette: Palette, row: Row | null, flag: string, o
   return values;
 }
 
-export function DataPanel({ controls, row, detail, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious, onDuplicate, afterSpecies }: {
+export function DataPanel({ controls, row, palette, locked, readOnly, bulkCount, onChange, onCopyPrevious, canCopyPrevious,
+                           afterSpecies, onNext, canNext }: {
   controls: Control[];
   row: Row | null;
-  detail?: FileDetail | null;
   palette: Palette;
   locked: Set<string>;
   readOnly: boolean;
@@ -40,8 +40,9 @@ export function DataPanel({ controls, row, detail, palette, locked, readOnly, bu
   onChange: (values: Record<string, string>, confirmText?: string) => Promise<void>;
   onCopyPrevious: () => void;
   canCopyPrevious: boolean;
-  onDuplicate?: () => void;
   afterSpecies?: React.ReactNode;
+  onNext?: () => void;
+  canNext?: boolean;
 }) {
   const { t } = useI18n();
   const byLabel = new Map(controls.map((c) => [c.dataLabel, c]));
@@ -54,9 +55,7 @@ export function DataPanel({ controls, row, detail, palette, locked, readOnly, bu
   const paletteFlags = new Set(paletteItems.map((i) => i.flag));
   const counterOwners = new Map<string, string>();
   for (const item of paletteItems) {
-    if (item.counter && byLabel.get(item.counter)?.type === "Counter" && !locked.has(item.counter)) {
-      counterOwners.set(item.counter, item.flag);
-    }
+    if (item.counter) counterOwners.set(item.counter, item.flag);
   }
   // A palette association must never hide a template's input field.
   const others = controls.filter((c) => !c.standard && c.visible && !paletteFlags.has(c.dataLabel));
@@ -73,86 +72,80 @@ export function DataPanel({ controls, row, detail, palette, locked, readOnly, bu
     return onChange(flag ? speciesChange(inputPalette, bulk ? null : row, flag, Number(value) > 0, value)
       : { [label]: value }, confirmText);
   };
+  const toggle = (flag: string, label: string, on: boolean) => {
+    const change = speciesChange(inputPalette, bulk ? null : row, flag, on);
+    onChange(change, bulk ? t("data.bulkConfirm", { count: bulkCount, field: label, value: String(on) }) : undefined);
+  };
+  const dateTime = byLabel.get("DateTime");
 
   return (
     <>
-      {bulk && <div className="bulk"><strong>{t("data.bulk", { count: bulkCount })}</strong><br />{t("data.bulkHint", { count: bulkCount })}</div>}
-      {!bulk && row && (
-        <div style={{ marginBottom: 12 }}>
-          <div className="field" style={{ marginBottom: onDuplicate ? 6 : undefined }}>
-            <span className="label">
-              {t("data.file")}
-              {detail?.recordTotal && detail.recordTotal > 1 ? (
-                <span style={{ marginLeft: 6, fontWeight: "normal", fontSize: "0.85em", opacity: 0.85 }}>
-                  {t("data.recordIndex", { current: detail.recordIndex, total: detail.recordTotal })}
-                </span>
-              ) : null}
-            </span>
-            <span className="path">{row.values.RelativePath ? `${row.values.RelativePath}\\` : ""}{row.values.File}</span>
+      <div className="scroll">
+        {bulk && <div className="grp"><div className="bulk"><strong>{t("data.bulk", { count: bulkCount })}</strong><br />{t("data.bulkHint", { count: bulkCount })}</div></div>}
+        <div className="grp">
+          <div className="gt">{t("data.species")}</div>
+          {paletteItems.length === 0 && <p className="note">{t("data.noPalette")}</p>}
+          <div className="pal">
+            {paletteItems.map((item) => {
+              const control = byLabel.get(item.flag);
+              if (!control) return null;
+              const on = !bulk && isTrue(values[item.flag]);
+              const count = item.counter && !bulk ? Number(values[item.counter] || 0) : null;
+              return (
+                <div key={item.flag} className={`spc${on ? " on" : ""}`} title={control.tooltip || control.label}>
+                  <button type="button" className="nm" aria-pressed={on} disabled={disabled}
+                          onClick={() => toggle(item.flag, control.label, !on)}>
+                    {item.key && <kbd>{item.key}</kbd>}<span>{control.label}</span>
+                  </button>
+                  {on && count !== null && item.counter && (
+                    <div className="st">
+                      <button type="button" disabled={disabled} aria-label={`${control.label} −`}
+                              onClick={() => write(item.counter!, String(Math.max(0, count - 1)))}>−</button>
+                      <output aria-label={byLabel.get(item.counter)?.label}>{count}</output>
+                      <button type="button" disabled={disabled} aria-label={`${control.label} ＋`}
+                              onClick={() => write(item.counter!, String(count + 1))}>+</button>
+                    </div>
+                  )}
+                </div>
+              );
+            })}
           </div>
-          {onDuplicate && (
-            <button
-              type="button"
-              className="btn small"
-              disabled={disabled}
-              onClick={onDuplicate}
-              title={t("data.duplicateHint")}
-              style={{ width: "100%", justifyContent: "center" }}
-            >
-              ＋ {t("data.duplicate")}
-            </button>
-          )}
         </div>
-      )}
-
-      <div className="section-title">{t("data.species")}<span className="sub">{t("data.speciesHint")}</span></div>
-      {paletteItems.length === 0 && <p className="note">{t("data.noPalette")}</p>}
-      <div className="palette">
-        {paletteItems.map((item) => {
-          const control = byLabel.get(item.flag);
-          if (!control) return null;
-          const on = !bulk && isTrue(values[item.flag]);
-          const count = item.counter && !bulk ? values[item.counter] : undefined;
-          return (
-            <button key={item.flag} className="sp" aria-pressed={on} disabled={disabled}
-                    title={control.tooltip || control.label}
-                    onClick={() => {
-                      const change = speciesChange(inputPalette, bulk ? null : row, item.flag, !on);
-                      onChange(change, bulk ? t("data.bulkConfirm", { count: bulkCount, field: control.label, value: String(!on) }) : undefined);
-                    }}>
-              {control.label}
-              <span className="meta">
-                {item.key && <kbd>{item.key}</kbd>}{count !== undefined && count !== "0" && count !== "" ? ` × ${count}` : ""}
-              </span>
-            </button>
-          );
-        })}
+        {afterSpecies}
+        <div className="grp">
+          <div className="gt">
+            {t("data.fields")}
+            {!bulk && (
+              <button type="button" className="btn sm" disabled={disabled || !canCopyPrevious} onClick={onCopyPrevious}>
+                {t("data.samePrev")}
+              </button>
+            )}
+          </div>
+          <div className="fg">
+            {others.map((c) => (
+              <ControlField key={c.dataLabel} control={c} value={values[c.dataLabel] ?? ""} bulk={bulk}
+                            disabled={disabled} locked={locked.has(c.dataLabel)}
+                            stepButtons={!bulk && counterOwners.has(c.dataLabel)}
+                            onCommit={(v) => write(c.dataLabel, v)} />
+            ))}
+            {dateTime && !bulk && row && (
+              <ControlField control={dateTime} value={values.DateTime ?? ""} disabled={disabled}
+                            locked={false} bulk={false} onCommit={(v) => write("DateTime", v)} />
+            )}
+          </div>
+        </div>
       </div>
-      {afterSpecies}
-
-      <div className="section-title">{t("data.other")}</div>
-      {!bulk && (
-        <button className="btn small" disabled={disabled || !canCopyPrevious} onClick={onCopyPrevious}>
-          {t("data.copyPrevious")}
-        </button>
-      )}
-      {others.map((c) => (
-        <ControlField key={c.dataLabel} control={c} value={values[c.dataLabel] ?? ""} bulk={bulk}
-                      disabled={disabled} locked={locked.has(c.dataLabel)}
-                      stepButtons={!bulk && counterOwners.has(c.dataLabel)}
-                      onCommit={(v) => write(c.dataLabel, v)} />
-      ))}
-      {byLabel.get("DateTime") && !bulk && row && (
-        <ControlField control={byLabel.get("DateTime")!} value={values.DateTime ?? ""} disabled={disabled}
-                      locked={false} bulk={false} onCommit={(v) => write("DateTime", v)} />
-      )}
-      {byLabel.get("DeleteFlag") && (
-        <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
-          <input type="checkbox" disabled={disabled} checked={!bulk && isTrue(values.DeleteFlag)}
-                 onChange={(e) => write("DeleteFlag", e.target.checked ? "true" : "false")} />
-          {t("data.deleteFlag")}
-        </label>
-      )}
+      <div className="foot">
+        {byLabel.get("DeleteFlag") && (
+          <label>
+            <input type="checkbox" disabled={disabled} checked={!bulk && isTrue(values.DeleteFlag)}
+                   onChange={(e) => write("DeleteFlag", e.target.checked ? "true" : "false")} />
+            {t("data.deleteFlag")}
+          </label>
+        )}
+        <span className="spacer" />
+        {onNext && <button type="button" className="btn main" disabled={!canNext} onClick={onNext}>{t("data.next")} →</button>}
+      </div>
     </>
   );
 }
@@ -176,6 +169,7 @@ function ControlField({ control, value, disabled, locked, bulk, stepButtons, onC
     }
   };
   const common = { id, disabled: disabled || locked };
+  const wide = control.type === "MultiLine" || control.type === "MultiChoice" || !!stepButtons;
   let input: JSX.Element;
   switch (control.type) {
     case "Flag":
@@ -220,7 +214,7 @@ function ControlField({ control, value, disabled, locked, bulk, stepButtons, onC
                            : control.type === "Date_" ? "2026-04-01" : control.type === "Time_" ? "12:34:56" : undefined} />;
   }
   return (
-    <div className={`field${error ? " invalid" : ""}`} title={control.tooltip}>
+    <div className={`field${error ? " invalid" : ""}${locked ? " auto" : ""}${wide ? " w" : ""}`} title={control.tooltip}>
       <label htmlFor={id} id={`${id}-l`}>{control.label}</label>
       {stepButtons ? <div className="counter-input">
         {input}
@@ -229,7 +223,6 @@ function ControlField({ control, value, disabled, locked, bulk, stepButtons, onC
         <button className="btn small" disabled={common.disabled} aria-label={`${control.label} +1`}
                 onClick={() => commit(String(Math.max(0, Number(value || 0) + 1)))}>+</button>
       </div> : input}
-      {locked && <span className="note">{t("data.locked")}</span>}
       {error && <span className="msg">✕ {error}</span>}
     </div>
   );

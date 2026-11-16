@@ -1,3 +1,4 @@
+import type { TreeData } from "./tree";
 import type { FileDetail, Filter, Info, Project, ReviewPosition, RestEvent, Row, TemplateConfirmation, TemplateDraft, TemplatePreview, VideoInfo } from "./types";
 
 export interface EventResult {
@@ -62,6 +63,7 @@ export const api = {
     request<{ total: number; rows: Row[] }>("GET", `/api/files?filter=${q(filter)}&offset=${offset}&limit=${limit}`),
   rowsByIds: (ids: number[]) =>
     request<{ total: number; rows: Row[] }>("GET", `/api/files?filter=${q({ ids } as any)}&limit=${ids.length}`),
+  tree: (filter: Filter, records = false) => request<TreeData>("GET", `/api/files/tree?filter=${q(filter)}&records=${records}`),
   file: (id: number) => request<FileDetail>("GET", `/api/files/${id}`),
   update: (ids: number[], values: Record<string, unknown>) =>
     request<{ changed: number; rows: Row[]; canUndo: boolean; canRedo: boolean }>("PATCH", "/api/files", { ids, values }),
@@ -76,6 +78,12 @@ export const api = {
   paletteSuggest: () => request<Project["settings"]["palette"]>("GET", "/api/palette/suggest"),
   speciesCounters: (flags: string[], labelSuffix: string) =>
     request<Project & { templateUpdated: boolean }>("POST", "/api/template/species-counters", { flags, labelSuffix }),
+  addSpecies: (name: string, counter: boolean, countSuffix: string) =>
+    request<Project & { templateUpdated: boolean; added: { flag: string; counter: string | null } }>(
+      "POST", "/api/template/species", { name, counter, countSuffix }),
+  addEventColumns: (keys: string[], labels: Record<string, string>) =>
+    request<Project & { templateUpdated: boolean; added: Record<string, string> }>(
+      "POST", "/api/template/event-columns", { keys, labels }),
   importRecognitions: (path: string) => request<{ report: any }>("POST", "/api/recognitions/import", { path }),
   exportCsv: () => request<{ path: string }>("POST", "/api/export/csv", {}),
   saveCapture: (fileId: number, filename: string, image: string) =>

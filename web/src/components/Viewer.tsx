@@ -392,97 +392,120 @@ export function GuideShape({ guide, w, h, lw, dashed }: { guide: Guide; w: numbe
 /** A bar on the timeline: an event's part inside this video. `end` null means it is still open. */
 export interface Segment { key: number; start: number; end: number | null; label: string; carriedIn: boolean; carriedOut: boolean }
 
-export function Timeline({
-  frame, total, frameTimes, segments, onSeek, exact,
-  playbackRate, onPlaybackRateChange, isPlaying, onTogglePlay, onStep,
+const Icon = ({ d }: { d: string }) => (
+  <svg viewBox="0 0 24 24" aria-hidden="true"><path d={d} /></svg>
+);
+
+export const ICONS = {
+  prevFile: "M3 5h2v14H3zM13 5v14l-8-7zM22 5v14l-8-7z",
+  back: "M5 5h2.5v14H5zM19 5v14l-10-7z",
+  play: "M7 5v14l12-7z",
+  pause: "M6 5h4.5v14H6zM13.5 5H18v14h-4.5z",
+  stop: "M6 6h12v12H6z",
+  forward: "M16.5 5H19v14h-2.5zM5 5v14l10-7z",
+  nextFile: "M19 5h2v14h-2zM2 5v14l8-7zM11 5v14l8-7z",
+};
+
+const RATES = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4];
+
+/**
+ * The transport under the viewer (design: 再生バー). For a video it shows the event track and the frame
+ * controls; for an image only the file navigation and the S/E buttons. `message` replaces the track
+ * while a video is being prepared or cannot be analysed.
+ */
+export function Transport({
+  video, message, onPrevFile, onNextFile, canPrev, canNext, eventButtons,
 }: {
-  frame: number; total: number; frameTimes: number[]; segments: Segment[];
-  onSeek: (frame: number) => void; exact: boolean;
-  playbackRate?: number; onPlaybackRateChange?: (rate: number) => void;
-  isPlaying?: boolean; onTogglePlay?: () => void; onStep?: (delta: number) => void;
+  video?: {
+    frame: number; total: number; frameTimes: number[]; segments: Segment[]; exact: boolean;
+    onSeek: (frame: number) => void; selected: number | null; onSelect: (key: number) => void;
+    playbackRate: number; onPlaybackRateChange: (rate: number) => void;
+    isPlaying: boolean; onTogglePlay: () => void; onStep: (delta: number) => void; onStop: () => void;
+  };
+  message?: string;
+  onPrevFile: () => void; onNextFile: () => void; canPrev: boolean; canNext: boolean;
+  eventButtons: React.ReactNode;
 }) {
   const { t } = useI18n();
   const trackRef = useRef<HTMLDivElement>(null);
+  const v = video;
+  const total = v?.total ?? 0;
   const pct = (f: number) => (total > 1 ? (f / (total - 1)) * 100 : 0);
   const seekFrom = (clientX: number) => {
     const rect = trackRef.current?.getBoundingClientRect();
-    if (!rect) return;
-    onSeek(Math.round(((clientX - rect.left) / rect.width) * (total - 1)));
+    if (!rect || !v) return;
+    const ratio = Math.max(0, Math.min(1, (clientX - rect.left) / rect.width));
+    v.onSeek(Math.round(ratio * (total - 1)));
   };
-  const seconds = frameTimes[frame] ?? 0;
   // Events that overlap in time (several animals) go on separate lanes so their bars do not cover each other.
   const LANE = 26;
   const laneEnds: number[] = [];
-  const placed = [...segments].sort((x, y) => x.start - y.start).map((s) => {
-    const end = s.end ?? frame;
+  const placed = v ? [...v.segments].sort((x, y) => x.start - y.start).map((s) => {
+    const end = s.end ?? v.frame;
     const a = Math.min(s.start, end), b = Math.max(s.start, end);
     let lane = laneEnds.findIndex((e) => e < a);
     if (lane < 0) lane = laneEnds.length;
     laneEnds[lane] = b;
     return { s, a, b, lane };
-  });
-  const height = Math.max(1, laneEnds.length) * LANE + 6;
+  }) : [];
+  const height = Math.max(58, laneEnds.length * LANE + 8);
+  const seconds = v ? v.frameTimes[v.frame] ?? 0 : 0;
   return (
-    <div className="timeline">
-      <div className="tc" style={{ display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: 8 }}>
-        <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-          {onTogglePlay && (
-            <button type="button" className="icon-btn" onClick={onTogglePlay} title="Space: Play/Pause"
-                    style={{ minWidth: 28, height: 26, padding: "0 6px", background: "var(--km-surface)", color: "var(--km-primary)", border: "none", borderRadius: 4, fontWeight: 700, cursor: "pointer" }}>
-              {isPlaying ? "⏸" : "▶"}
-            </button>
-          )}
-          {onStep && (
-            <>
-              <button type="button" className="icon-btn" onClick={() => onStep(-1)} title="<: -1 frame"
-                      style={{ height: 26, padding: "0 6px", background: "var(--km-surface)", color: "var(--km-primary)", border: "none", borderRadius: 4, cursor: "pointer" }}>◀</button>
-              <button type="button" className="icon-btn" onClick={() => onStep(1)} title=">: +1 frame"
-                      style={{ height: 26, padding: "0 6px", background: "var(--km-surface)", color: "var(--km-primary)", border: "none", borderRadius: 4, cursor: "pointer" }}>▶</button>
-            </>
-          )}
-          <span>{formatTimecode(seconds)}</span>
-          <span>{t("video.frame", { frame, total: Math.max(0, total - 1) })}</span>
-          {!exact && <span title={t("video.approx")}>≈</span>}
-        </div>
-        {onPlaybackRateChange && (
-          <div style={{ display: "flex", alignItems: "center", gap: 6 }}>
-            <span style={{ fontSize: 13, opacity: 0.85 }}>{t("video.speed")}:</span>
-            <div style={{ display: "flex", gap: 2 }}>
-              {[0.5, 1, 1.5, 2].map((r) => (
-                <button key={r} type="button" className="chip" aria-pressed={playbackRate === r}
-                        onClick={() => onPlaybackRateChange(r)}
-                        style={{ padding: "1px 6px", minHeight: 24, fontSize: 12 }}>
-                  {r}x
-                </button>
-              ))}
-            </div>
-            <select value={playbackRate ?? 1} onChange={(e) => onPlaybackRateChange(Number(e.target.value))}
-                    aria-label={t("video.speed")}
-                    style={{ width: 68, height: 24, padding: "0 2px", fontSize: 12, background: "var(--km-surface)", color: "var(--km-primary)", fontWeight: 700, borderRadius: 4, border: "none", cursor: "pointer" }}>
-              {[0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3, 4].map((r) => (
-                <option key={r} value={r}>{r}x</option>
-              ))}
-            </select>
-          </div>
-        )}
-      </div>
-      <div className="track" ref={trackRef} style={{ height }}
-           onMouseDown={(e) => {
-             seekFrom(e.clientX);
-             const move = (ev: MouseEvent) => seekFrom(ev.clientX);
-             const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
-             window.addEventListener("mousemove", move);
-             window.addEventListener("mouseup", up);
-           }}>
-        {placed.map(({ s, a, b, lane }) => {
-          return (
-            <div key={s.key} className={`seg${s.end === null ? " pending" : ""}`}
-                 style={{ left: `${pct(a)}%`, width: `${Math.max(0.5, pct(b) - pct(a))}%`, top: 4 + lane * LANE }}>
+    <div className="tp" aria-label={t("video.transport")}>
+      {v && (
+        <div className="track" ref={trackRef} style={{ height }} data-testid="track"
+             onMouseDown={(e) => {
+               if ((e.target as HTMLElement).closest(".sg")) return;
+               seekFrom(e.clientX);
+               const move = (ev: MouseEvent) => seekFrom(ev.clientX);
+               const up = () => { window.removeEventListener("mousemove", move); window.removeEventListener("mouseup", up); };
+               window.addEventListener("mousemove", move);
+               window.addEventListener("mouseup", up);
+             }}>
+          {placed.map(({ s, a, b, lane }) => (
+            <button key={s.key} type="button" className={`sg${s.end === null ? " pend" : ""}`}
+                    aria-pressed={v.selected === s.key} title={s.label}
+                    style={{ left: `${pct(a)}%`, width: `${Math.max(0.5, pct(b) - pct(a))}%`, top: 4 + lane * LANE }}
+                    onClick={() => v.onSelect(s.key)}>
               {s.carriedIn ? "◀ " : ""}{s.label}{s.carriedOut ? " ▶" : ""}
+            </button>
+          ))}
+          <div className="head" style={{ left: `${pct(v.frame)}%` }} />
+        </div>
+      )}
+      {message && <div className="msg" role="status">{message}</div>}
+      <div className="ctl">
+        <div className="g">
+          <button type="button" className="pb2" onClick={onPrevFile} disabled={!canPrev}
+                  aria-label={t("video.prevFile")} title={`${t("video.prevFile")} (←)`}><Icon d={ICONS.prevFile} /></button>
+          {v && <>
+            <button type="button" className="pb2" onClick={() => v.onStep(-1)}
+                    aria-label={t("video.back1")} title={`${t("video.back1")} (,)`}><Icon d={ICONS.back} /></button>
+            <button type="button" className="pb2" onClick={v.onTogglePlay}
+                    aria-label={v.isPlaying ? t("video.pause") : t("video.play")} title="Space">
+              <Icon d={v.isPlaying ? ICONS.pause : ICONS.play} />
+            </button>
+            <button type="button" className="pb2" onClick={v.onStop}
+                    aria-label={t("video.stop")} title={t("video.stop")}><Icon d={ICONS.stop} /></button>
+            <button type="button" className="pb2" onClick={() => v.onStep(1)}
+                    aria-label={t("video.fwd1")} title={`${t("video.fwd1")} (.)`}><Icon d={ICONS.forward} /></button>
+          </>}
+          <button type="button" className="pb2" onClick={onNextFile} disabled={!canNext}
+                  aria-label={t("video.nextFile")} title={`${t("video.nextFile")} (→)`}><Icon d={ICONS.nextFile} /></button>
+        </div>
+        {v && (
+          <>
+            <div className="tcs">
+              <span data-testid="timecode">{formatTimecode(seconds)}{!v.exact && <span title={t("video.approx")}> ≈</span>}</span>
+              <span className="fr" data-testid="frame">{t("video.frame", { frame: v.frame, total: Math.max(0, total - 1) })}</span>
             </div>
-          );
-        })}
-        <div className="head" style={{ left: `calc(${pct(frame)}% - 1px)` }} />
+            <select value={v.playbackRate} onChange={(e) => v.onPlaybackRateChange(Number(e.target.value))}
+                    aria-label={t("video.speed")} title={`${t("video.speed")} ([ ])`}>
+              {RATES.map((r) => <option key={r} value={r}>{r}×</option>)}
+            </select>
+          </>
+        )}
+        <div className="evb">{eventButtons}</div>
       </div>
     </div>
   );

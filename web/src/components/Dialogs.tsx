@@ -12,7 +12,10 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
 }) {
   const { t, lang, setLang } = useI18n();
   const toast = useToast();
-  const flags = project.controls.filter((c) => c.type === "Flag" && c.visible);
+  const [eventColumns, setEventColumns] = useState<EventColumns>({ ...project.eventColumns });
+  // A Flag the stay events write to is not a species.
+  const flags = project.controls.filter((c) => c.type === "Flag" && c.visible
+    && c.dataLabel !== eventColumns.startInside && c.dataLabel !== eventColumns.endInside);
   const counters = project.controls.filter((c) => c.type === "Counter");
   const [items, setItems] = useState(() => {
     const byFlag = new Map(palette.items.map((i) => [i.flag, i]));
@@ -20,7 +23,9 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
       counter: byFlag.get(f.dataLabel)?.counter ?? null, key: byFlag.get(f.dataLabel)?.key ?? "" }));
   });
   const [single, setSingle] = useState(palette.single);
-  const [eventColumns, setEventColumns] = useState<EventColumns>({ ...project.eventColumns });
+  const [newName, setNewName] = useState("");
+  const [withCount, setWithCount] = useState(true);
+  const [busy, setBusy] = useState(false);
   const [threshold, setThreshold] = useState<number>(Number(project.settings.bboxThreshold ?? 0.2));
   const numberTargets = project.controls.filter((c) =>
     ["Note", "MultiLine", "DecimalAny", "DecimalPositive", "IntegerAny", "IntegerPositive"].includes(c.type));
@@ -28,10 +33,12 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
   const flagTargets = project.controls.filter((c) => c.type === "Flag");
   const speciesTargets = project.controls.filter((c) => ["Note", "MultiLine", "AlphaNumeric", "FixedChoice"].includes(c.type));
 
+  // Only the rows on screen: a Flag chosen for stays above is no longer a species.
+  const shown = (i: { flag: string }) => flags.some((f) => f.dataLabel === i.flag);
   const save = async () => {
     try {
       const newPalette: Palette = {
-        items: items.filter((i) => i.use).map(({ flag, counter, key }) => ({ flag, counter, key })), single,
+        items: items.filter((i) => i.use && shown(i)).map(({ flag, counter, key }) => ({ flag, counter, key })), single,
       };
       await api.setSetting("palette", newPalette);
       await api.setSetting("eventColumns", eventColumns);
@@ -43,11 +50,11 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
     }
   };
 
-  const missingCounters = items.filter((i) => i.use && !i.counter);
+  const missingCounters = items.filter((i) => i.use && shown(i) && !i.counter);
   const addCounters = async () => {
     if (!window.confirm(t("settings.addCountersConfirm", { count: missingCounters.length }))) return;
     try {
-      await api.setSetting("palette", { items: items.filter((i) => i.use).map(({ flag, counter, key }) => ({ flag, counter, key })), single });
+      await api.setSetting("palette", { items: items.filter((i) => i.use && shown(i)).map(({ flag, counter, key }) => ({ flag, counter, key })), single });
       const result = await api.speciesCounters(missingCounters.map((i) => i.flag), lang === "ja" ? "の個数" : " count");
       onProject(result);
       const p = result.settings.palette;
@@ -56,6 +63,50 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
                  result.templateUpdated ? t("settings.countersAdded") : t("settings.countersNoTemplate"));
     } catch (e) {
       toast.error(e);
+    }
+  };
+
+  const addSpecies = async () => {
+    const name = newName.trim();
+    if (!name || busy) return;
+    setBusy(true);
+    try {
+      const result = await api.addSpecies(name, withCount, lang === "ja" ? "の個数" : " count");
+      // The key comes from what is on screen: keys changed here and not saved yet count too.
+      setItems((list) => {
+        const rest = list.filter((i) => i.flag !== result.added.flag);
+        const used = new Set(rest.filter((i) => i.use).map((i) => i.key));
+        const key = "1234567890".split("").find((k) => !used.has(k)) ?? "";
+        return [...rest, { flag: result.added.flag, use: true, counter: result.added.counter, key }];
+      });
+      onProject(result);
+      setNewName("");
+      toast.push(result.templateUpdated ? "success" : "warning",
+                 result.templateUpdated ? t("settings.speciesAdded", { name }) : t("settings.countersNoTemplate"));
+    } catch (e) {
+      toast.error(e);
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  const eventKeys = ["speciesName", "individual", "startInside", "entry", "duration", "exitFile", "exit", "endInside"] as const;
+  const known = new Set(project.controls.map((c) => c.dataLabel));
+  const unsetEvents = eventKeys.filter((k) => !eventColumns[k] || !known.has(eventColumns[k]!));
+  const addEventColumns = async () => {
+    if (busy) return;
+    setBusy(true);
+    try {
+      const result = await api.addEventColumns([...unsetEvents], Object.fromEntries(unsetEvents.map((k) => [k, t(`settings.eventField.${k}`)])));
+      setEventColumns((current) => ({ ...current, ...result.added }));
+      onProject(result);
+      toast.push(result.templateUpdated ? "success" : "warning",
+                 result.templateUpdated ? t("settings.eventColumnsAdded", { count: Object.keys(result.added).length })
+                   : t("settings.countersNoTemplate"));
+    } catch (e) {
+      toast.error(e);
+    } finally {
+      setBusy(false);
     }
   };
 
@@ -93,7 +144,8 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
         <thead><tr><th>{t("settings.use")}</th><th>{t("settings.flag")}</th><th>{t("settings.counter")}</th><th>{t("settings.key")}</th></tr></thead>
         <tbody>
           {items.map((item, i) => {
-            const flag = flags.find((f) => f.dataLabel === item.flag)!;
+            const flag = flags.find((f) => f.dataLabel === item.flag);
+            if (!flag) return null;
             const update = (patch: Partial<typeof item>) => setItems(items.map((x, j) => (j === i ? { ...x, ...patch } : x)));
             return (
               <tr key={item.flag}>
@@ -114,8 +166,20 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
               </tr>
             );
           })}
+          {!items.some((i) => flags.some((f) => f.dataLabel === i.flag)) && (
+            <tr><td colSpan={4} className="note">{t("settings.noSpecies")}</td></tr>
+          )}
         </tbody>
       </table>
+      <form className="add-row" onSubmit={(e) => { e.preventDefault(); addSpecies(); }}>
+        <input type="text" value={newName} placeholder={t("settings.newSpecies")} aria-label={t("settings.newSpecies")}
+               disabled={project.readOnly} onChange={(e) => setNewName(e.target.value)} />
+        <label>
+          <input type="checkbox" checked={withCount} disabled={project.readOnly}
+                 onChange={(e) => setWithCount(e.target.checked)} />{t("settings.withCount")}
+        </label>
+        <button className="btn" type="submit" disabled={project.readOnly || busy || !newName.trim()}>{t("settings.addSpecies")}</button>
+      </form>
       <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input type="checkbox" checked={single} onChange={(e) => setSingle(e.target.checked)} />{t("settings.single")}
       </label>
@@ -132,6 +196,11 @@ export function SettingsDialog({ project, palette, onClose, onProject }: {
         {column("startInside")}{column("entry")}{column("duration")}
         {column("exitFile")}{column("exit")}{column("endInside")}
       </div>
+      {unsetEvents.length > 0 && (
+        <button className="btn" disabled={project.readOnly || busy} onClick={addEventColumns} style={{ alignSelf: "flex-start" }}>
+          {t("settings.addEventColumns")} ({unsetEvents.length})
+        </button>
+      )}
       <label style={{ display: "flex", gap: 8, alignItems: "center" }}>
         <input type="checkbox" checked={eventColumns.writeSpecies}
                onChange={(e) => setEventColumns({ ...eventColumns, writeSpecies: e.target.checked })} />
