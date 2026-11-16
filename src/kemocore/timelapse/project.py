@@ -141,7 +141,8 @@ class TimelapseProject:
             self.conn.close()
 
     def image_set(self) -> dict:
-        row = self.conn.execute(f"SELECT * FROM {C.IMAGE_SET_TABLE} ORDER BY Id LIMIT 1").fetchone()
+        with self.lock:  # one connection for every request thread: never used by two at once
+            row = self.conn.execute(f"SELECT * FROM {C.IMAGE_SET_TABLE} ORDER BY Id LIMIT 1").fetchone()
         return dict(row) if row else {}
 
     def info(self) -> dict:
@@ -240,6 +241,36 @@ class TimelapseProject:
         with self.lock:
             return [r[0] for r in self.conn.execute(f"SELECT Id FROM {C.DATA_TABLE}{where}{self.ORDER}", params)]
 
+    def tree(self, flt: dict, flags: list[str]) -> dict:
+        """The filtered files as a folder tree listing: each folder path once, then one short row
+        per file, `[id, folder index, file name, state, records]`, in the order of `ids`.
+
+        A file with several DataTable rows (Timelapse allows duplicates) is listed once, under the
+        first of its rows that passes the filter; `records` is how many rows the file has in all.
+        State bits, of that first row: 1 = one of `flags` (the species Flag columns) is true,
+        2 = marked for deletion.
+        """
+        where, params = self._where(flt)
+        flags = [l for l in flags if l in self.by_label]
+        entered = " OR ".join(f"lower(coalesce({S.q(l)}, '')) = 'true'" for l in flags) or "0"
+        sql = (f"SELECT Id, RelativePath, File, ({entered}), lower(coalesce(DeleteFlag, '')) = 'true' "
+               f"FROM {C.DATA_TABLE}{where}{self.ORDER}")
+        folders: dict[str, int] = {}
+        files = []
+        seen: set[tuple] = set()
+        with self.lock:
+            several = {(rel, name): n for rel, name, n in self.conn.execute(
+                f"SELECT RelativePath, File, COUNT(*) FROM {C.DATA_TABLE} GROUP BY RelativePath, File HAVING COUNT(*) > 1")}
+            for file_id, rel, name, is_entered, is_deleted in self.conn.execute(sql, params):
+                if several and (rel, name) in several:
+                    if (rel, name) in seen:
+                        continue
+                    seen.add((rel, name))
+                index = folders.setdefault((rel or "").strip("\\"), len(folders))
+                files.append([file_id, index, name or "", (1 if is_entered else 0) | (2 if is_deleted else 0),
+                              several.get((rel, name), 1)])
+        return {"folders": list(folders), "files": files}
+
     def position(self, flt: dict, file_id: int) -> int:
         """Index of a file within the filtered, sorted list (-1 if absent)."""
         ids = self.ids(flt)
@@ -271,9 +302,9 @@ class TimelapseProject:
         return [{"path": r[0] or "", "count": r[1]} for r in rows]
 
     def markers(self, file_id: int) -> dict[str, list[list[float]]]:
-        if not _table_exists(self.conn, C.MARKERS_TABLE):
-            return {}
         with self.lock:
+            if not _table_exists(self.conn, C.MARKERS_TABLE):
+                return {}
             row = self.conn.execute(f"SELECT * FROM {C.MARKERS_TABLE} WHERE Id = ?", (file_id,)).fetchone()
         if row is None:
             return {}
@@ -287,9 +318,9 @@ class TimelapseProject:
     # ---- recognitions ----------------------------------------------------------------------
 
     def detection_categories(self) -> dict:
-        if not _table_exists(self.conn, C.DETECTION_CATEGORIES):
-            return {"detection": {}, "classification": {}}
         with self.lock:
+            if not _table_exists(self.conn, C.DETECTION_CATEGORIES):
+                return {"detection": {}, "classification": {}}
             det = {str(r[0]): r[1] for r in self.conn.execute(f"SELECT category, label FROM {C.DETECTION_CATEGORIES}")}
             cls = {}
             if _table_exists(self.conn, C.CLASSIFICATION_CATEGORIES):
@@ -298,9 +329,10 @@ class TimelapseProject:
         return {"detection": det, "classification": cls}
 
     def detections(self, file_id: int) -> list[dict]:
-        if not _table_exists(self.conn, C.DETECTIONS):
-            return []
-        video = _table_exists(self.conn, C.DETECTIONS_VIDEO)
+        with self.lock:
+            if not _table_exists(self.conn, C.DETECTIONS):
+                return []
+            video = _table_exists(self.conn, C.DETECTIONS_VIDEO)
         sql = (f"SELECT d.detectionID, d.category, d.conf, d.bbox, d.classification, d.classification_conf"
                + (", v.frame_number, v.frame_rate" if video else "")
                + f" FROM {C.DETECTIONS} d"
@@ -533,7 +565,7 @@ class TimelapseProject:
     def add_controls(self, new_controls: list[dict], template_path: Path | None = None) -> list[Control]:
         """Append user controls to the .ddb (and its .tdb) as a Timelapse template sync would (spec §6).
 
-        Each item: {"type": ..., "label": ..., "dataLabel": ...}.
+        Each item: {"type": ..., "label": ..., "dataLabel": ...}; "default" replaces the type's default.
         """
         self._ensure_writable()
         year = datetime.now().year
@@ -543,58 +575,87 @@ class TimelapseProject:
             tconn = None
             if template_path is not None:
                 backup_file(template_path)
-                tconn = sqlite3.connect(template_path)
-                targets.append((tconn, False))
+                tconn = sqlite3.connect(template_path, timeout=2)
+                targets.insert(0, (tconn, False))
             added: list[Control] = []
             try:
+                # Both files change or neither: every write waits in an open transaction, and the
+                # template is locked first, so a template in use stops this before anything is written.
+                try:
+                    for conn, _is_data in targets:
+                        if conn.in_transaction:
+                            conn.commit()
+                        conn.execute("BEGIN IMMEDIATE")
+                except sqlite3.OperationalError as exc:
+                    raise ProjectError("error.templateBusy") from exc
                 for conn, is_data in targets:
                     count = conn.execute(f"SELECT COUNT(*) FROM {C.TEMPLATE_TABLE}").fetchone()[0]
                     taken = {r[0] for r in conn.execute(f"SELECT DataLabel FROM {C.TEMPLATE_TABLE}")}
-                    with conn:
-                        for item in new_controls:
-                            ctype = item["type"]
-                            if ctype not in C.USER_TYPES:
-                                raise ProjectError("error.unknownType", types=ctype)
-                            label = item["dataLabel"]
-                            if label in taken:
-                                raise ProjectError("error.duplicateField", field=label)
-                            count += 1
-                            prefix, _default, width, copyable = C.NEW_CONTROL_DEFAULTS[ctype]
-                            control = Control(
-                                id=0, control_order=count, spreadsheet_order=count, type=ctype,
-                                default_value=default_for_new_control(ctype, year), label=item.get("label") or label,
-                                data_label=label, tooltip=item.get("tooltip", ""), visible=True, list_raw="",
-                                export_to_csv=True, width=width, copyable=copyable,
-                            )
-                            conn.execute(S.INSERT_TEMPLATE_ROW, S.template_row_values(control))
-                            taken.add(label)
-                            if is_data:
-                                conn.execute(f"ALTER TABLE {C.DATA_TABLE} ADD COLUMN {S.data_column_sql(control)}")
-                                if ctype == C.COUNTER and _table_exists(conn, C.MARKERS_TABLE):
-                                    conn.execute(f"ALTER TABLE {C.MARKERS_TABLE} ADD COLUMN "
-                                                 f"{S.q(label)} TEXT DEFAULT '[]'")
-                                if ctype in C.NUMBER_TYPES:
-                                    # The column default is '' for numbers; rows get the control default.
-                                    conn.execute(f"UPDATE {C.DATA_TABLE} SET {S.q(label)} = ?",
-                                                 (control.default_value,))
-                                added.append(control)
+                    for item in new_controls:
+                        ctype = item["type"]
+                        if ctype not in C.USER_TYPES:
+                            raise ProjectError("error.unknownType", types=ctype)
+                        label = item["dataLabel"]
+                        if label in taken:
+                            raise ProjectError("error.duplicateField", field=label)
+                        count += 1
+                        prefix, _default, width, copyable = C.NEW_CONTROL_DEFAULTS[ctype]
+                        control = Control(
+                            id=0, control_order=count, spreadsheet_order=count, type=ctype,
+                            default_value=(item["default"] if "default" in item
+                                           else default_for_new_control(ctype, year)),
+                            label=item.get("label") or label,
+                            data_label=label, tooltip=item.get("tooltip", ""), visible=True, list_raw="",
+                            export_to_csv=True, width=width, copyable=copyable,
+                        )
+                        conn.execute(S.INSERT_TEMPLATE_ROW, S.template_row_values(control))
+                        taken.add(label)
+                        if is_data:
+                            conn.execute(f"ALTER TABLE {C.DATA_TABLE} ADD COLUMN {S.data_column_sql(control)}")
+                            if ctype == C.COUNTER and _table_exists(conn, C.MARKERS_TABLE):
+                                conn.execute(f"ALTER TABLE {C.MARKERS_TABLE} ADD COLUMN "
+                                             f"{S.q(label)} TEXT DEFAULT '[]'")
+                            if ctype in C.NUMBER_TYPES:
+                                # The column default is '' for numbers; rows get the control default.
+                                conn.execute(f"UPDATE {C.DATA_TABLE} SET {S.q(label)} = ?",
+                                             (control.default_value,))
+                            added.append(control)
+                for conn, _is_data in targets:
+                    conn.commit()
+            except BaseException:
+                for conn, _is_data in targets:
+                    if conn.in_transaction:
+                        conn.rollback()
+                raise
             finally:
                 if tconn is not None:
                     tconn.close()
-            self.reload_template()
+                self.reload_template()
         return added
 
-    def find_template(self) -> Path | None:
-        """Prefer the matching same-name .tdb; otherwise require one unambiguous match."""
+    def find_template(self, strict: bool = False) -> Path | None:
+        """Prefer the matching same-name .tdb; otherwise require one unambiguous match.
+
+        `strict` is for callers about to write: a template that cannot be read because another
+        program holds it is an error then, not a template that does not exist.
+        """
         mine = {c.data_label for c in self.controls}
         matches = []
         for candidate in self.root.glob("*.tdb"):
+            conn = None
             try:
-                conn = sqlite3.connect(S.sqlite_uri(candidate), uri=True)
+                conn = sqlite3.connect(S.sqlite_uri(candidate), uri=True, timeout=1)
                 labels = {r[0] for r in conn.execute(f"SELECT DataLabel FROM {C.TEMPLATE_TABLE}")}
-                conn.close()
+            except sqlite3.OperationalError as exc:
+                if strict and ("locked" in str(exc) or "busy" in str(exc)):
+                    # Skipping it would change the data file alone and leave the template behind.
+                    raise ProjectError("error.templateBusy") from exc
+                continue
             except sqlite3.DatabaseError:
                 continue
+            finally:
+                if conn is not None:
+                    conn.close()
             if labels == mine:
                 if candidate == self.path.with_suffix(".tdb"):
                     return candidate
